@@ -1,0 +1,26 @@
+# Binaries and executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+
+# Data and Storage directories
+data/
+raw_html/
+*.gz
+
+# Environment and IDE
+.DS_Store
+.env
+.idea/
+.vscode/
+*.swp
+
+# Temporary files
+dummy_run.go
+live_run.go
+live_phase2_run.go
