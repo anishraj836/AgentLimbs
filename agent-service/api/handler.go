@@ -1,0 +1,193 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/crawler-monorepo/common/bm25"
+	"github.com/crawler-monorepo/common/hybrid"
+	"github.com/crawler-monorepo/common/markdown"
+	"github.com/crawler-monorepo/common/utils"
+	"github.com/crawler-monorepo/common/vector"
+	"github.com/crawler-monorepo/crawler-service/httpclient"
+	"github.com/crawler-monorepo/embedding-service/embedder"
+	"github.com/crawler-monorepo/indexer-service/indexer"
+)
+
+type AgentHandler struct {
+	httpClient *httpclient.Client
+}
+
+func NewAgentHandler() *AgentHandler {
+	return &AgentHandler{
+		httpClient: httpclient.NewClient(),
+	}
+}
+
+type ScrapeRequest struct {
+	URL string `json:"url"`
+}
+
+type ScrapeResponse struct {
+	URL           string `json:"url"`
+	Title         string `json:"title"`
+	Markdown      string `json:"markdown"`
+	TokenEstimate int    `json:"token_estimate"`
+	LatencyMs     float64 `json:"latency_ms"`
+}
+
+func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
+	var req ScrapeRequest
+
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"Invalid JSON body"}`, http.StatusBadRequest)
+			return
+		}
+	} else {
+		req.URL = r.URL.Query().Get("url")
+	}
+
+	if req.URL == "" {
+		http.Error(w, `{"error":"URL parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	normURL, err := utils.NormalizeURL(req.URL)
+	if err != nil {
+		http.Error(w, `{"error":"Invalid URL format"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	result, err := h.httpClient.Fetch(ctx, normURL)
+	if err != nil {
+		http.Error(w, `{"error":"Failed to fetch URL: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer result.Response.Body.Close()
+
+	limitedBody := io.LimitReader(result.Response.Body, 10*1024*1024)
+	htmlBytes, err := io.ReadAll(limitedBody)
+	if err != nil {
+		http.Error(w, `{"error":"Failed to read response body"}`, http.StatusInternalServerError)
+		return
+	}
+
+	mdText, tokens, title := markdown.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes)
+	latency := float64(time.Since(t0).Microseconds()) / 1000.0
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ScrapeResponse{
+		URL:           result.FinalURL,
+		Title:         title,
+		Markdown:      mdText,
+		TokenEstimate: tokens,
+		LatencyMs:     latency,
+	})
+}
+
+type AgentQueryRequest struct {
+	Query string `json:"query"`
+	TopK  int    `json:"top_k"`
+}
+
+func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
+	var req AgentQueryRequest
+
+	if r.Method == http.MethodPost {
+		json.NewDecoder(r.Body).Decode(&req)
+	} else {
+		req.Query = r.URL.Query().Get("q")
+		req.TopK, _ = strconv.Atoi(r.URL.Query().Get("top_k"))
+	}
+
+	if req.TopK <= 0 {
+		req.TopK = 5
+	}
+
+	// 1. Sparse BM25 Keyword Search
+	bm25Hits := bm25.RankDocuments(
+		req.Query,
+		indexer.GlobalEngine.Inverted,
+		indexer.GlobalEngine.DocTitles,
+		indexer.GlobalEngine.DocURLs,
+		indexer.GlobalEngine.DocBodies,
+		req.TopK*2,
+	)
+
+	// 2. Dense Vector Semantic Search
+	queryVec := vector.GenerateFeatureVector(req.Query, 128)
+	vecHits := embedder.GlobalVectorIndex.SearchNearest(queryVec, req.TopK*2)
+
+	// 3. Reciprocal Rank Fusion (RRF)
+	fusedHits := hybrid.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
+
+	latency := float64(time.Since(t0).Microseconds()) / 1000.0
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"query":      req.Query,
+		"latency_ms": latency,
+		"total_hits": len(fusedHits),
+		"results":    fusedHits,
+	})
+}
+
+func (h *AgentHandler) Tools(w http.ResponseWriter, r *http.Request) {
+	tools := []map[string]interface{}{
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "agent_limbs_scrape",
+				"description": "Fetch and convert any website URL into clean, token-efficient Github-Flavored Markdown for LLMs.",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"url": map[string]interface{}{
+							"type":        "string",
+							"description": "The target website URL to scrape (e.g. https://golang.org)",
+						},
+					},
+					"required": []string{"url"},
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "agent_limbs_hybrid_search",
+				"description": "Search the indexed web corpus using Hybrid RRF (BM25 Keyword + AI Vector Semantic Similarity).",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "The natural language search query or topic",
+						},
+						"top_k": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of top ranked results to return (default 5)",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"provider": "AgentLimbs AI Agent Tools",
+		"version":  "1.0.0",
+		"tools":    tools,
+	})
+}
