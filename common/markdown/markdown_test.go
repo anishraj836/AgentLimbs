@@ -12,6 +12,10 @@ func TestConvertHTMLToMarkdown(t *testing.T) {
 			<body>
 				<h1>Welcome to Test Page</h1>
 				<p>This is a paragraph with a <a href="/about">link</a>.</p>
+				<table>
+					<tr><th>Col 1</th><th>Col 2</th></tr>
+					<tr><td>Val 1</td><td>Val 2</td></tr>
+				</table>
 				<ul>
 					<li>Item 1</li>
 					<li>Item 2</li>

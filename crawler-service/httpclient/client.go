@@ -4,31 +4,81 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 )
+
+// isPrivateIP checks if an IP is loopback, private RFC1918, link-local metadata, or IPv6 private.
+func isPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	// Check IPv4 private ranges
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 10: // 10.0.0.0/8
+			return true
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31: // 172.16.0.0/12
+			return true
+		case ip4[0] == 192 && ip4[1] == 168: // 192.168.0.0/16
+			return true
+		case ip4[0] == 169 && ip4[1] == 254: // 169.254.0.0/16 AWS/GCP metadata
+			return true
+		}
+	} else if len(ip) == net.IPv6len {
+		// IPv6 unique local addresses (fc00::/7)
+		if ip[0] == 0xfc || ip[0] == 0xfd {
+			return true
+		}
+	}
+	return false
+}
 
 type Client struct {
 	client *http.Client
 }
 
 func NewClient() *Client {
+	dialer := &net.Dialer{
+		Timeout:   5 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
-		// Let Go's transport handle gzip decompression transparently.
-		// Do NOT set Accept-Encoding manually; the transport adds it
-		// automatically and handles decompression when DisableCompression is false.
-		DisableCompression: false,
+		DisableCompression:  false,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+
+			ips, err := net.LookupIP(host)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, ip := range ips {
+				if isPrivateIP(ip) {
+					return nil, fmt.Errorf("blocked request to private/internal IP: %s (%s)", ip.String(), host)
+				}
+			}
+
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
 	}
 
 	return &Client{
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   10 * time.Second,
-			// Follow redirects (default behavior) but cap at 10 hops
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("too many redirects (>10)")

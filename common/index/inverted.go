@@ -1,6 +1,8 @@
 package index
 
 import (
+	"encoding/json"
+	"os"
 	"sync"
 )
 
@@ -117,4 +119,50 @@ func (idx *InvertedIndex) GetStats() (totalDocs int64, avgDocLength float64, voc
 	}
 	vocabularySize = len(idx.postings)
 	return
+}
+
+type indexSnapshot struct {
+	Postings       map[string]*PostingList `json:"postings"`
+	DocLengths     map[string]int          `json:"doc_lengths"`
+	TotalDocLength int64                   `json:"total_doc_length"`
+	TotalDocuments int64                   `json:"total_documents"`
+}
+
+// SaveSnapshot serializes the inverted index posting lists to disk.
+func (idx *InvertedIndex) SaveSnapshot(filePath string) error {
+	idx.mu.RLock()
+	snap := indexSnapshot{
+		Postings:       idx.postings,
+		DocLengths:     idx.docLengths,
+		TotalDocLength: idx.totalDocLength,
+		TotalDocuments: idx.totalDocuments,
+	}
+	data, err := json.Marshal(snap)
+	idx.mu.RUnlock()
+
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, data, 0644)
+}
+
+// LoadSnapshot restores inverted index state from disk.
+func (idx *InvertedIndex) LoadSnapshot(filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	var snap indexSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return err
+	}
+
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.postings = snap.Postings
+	idx.docLengths = snap.DocLengths
+	idx.totalDocLength = snap.TotalDocLength
+	idx.totalDocuments = snap.TotalDocuments
+	return nil
 }

@@ -2,6 +2,8 @@ package vector
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -39,5 +41,32 @@ func TestVectorIndex(t *testing.T) {
 
 	if results[0].DocID != "doc1" {
 		t.Errorf("expected doc1 to rank nearest to query, got %s", results[0].DocID)
+	}
+}
+
+func TestVectorSnapshot(t *testing.T) {
+	idx := NewVectorIndex(3)
+	doc1 := []float64{0.8, 0.6, 0.0}
+	idx.AddVector("doc1", doc1)
+
+	tmpDir, err := os.MkdirTemp("", "vec_snap_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	snapPath := filepath.Join(tmpDir, "vector.json")
+	if err := idx.SaveSnapshot(snapPath); err != nil {
+		t.Fatalf("SaveSnapshot failed: %v", err)
+	}
+
+	restoredIdx := NewVectorIndex(3)
+	if err := restoredIdx.LoadSnapshot(snapPath); err != nil {
+		t.Fatalf("LoadSnapshot failed: %v", err)
+	}
+
+	results := restoredIdx.SearchNearest([]float64{0.8, 0.6, 0.0}, 1)
+	if len(results) == 0 || results[0].DocID != "doc1" {
+		t.Errorf("failed to restore vector index correctly: %v", results)
 	}
 }

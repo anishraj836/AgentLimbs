@@ -1,8 +1,10 @@
 package vector
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -137,4 +139,44 @@ func (vi *VectorIndex) SearchNearest(queryVector []float64, topK int) []VectorSe
 	}
 
 	return results
+}
+
+type vectorSnapshot struct {
+	Dimensions int                 `json:"dimensions"`
+	Vectors    map[string][]float64 `json:"vectors"`
+}
+
+// SaveSnapshot serializes document vector embeddings to disk.
+func (vi *VectorIndex) SaveSnapshot(filePath string) error {
+	vi.mu.RLock()
+	snap := vectorSnapshot{
+		Dimensions: vi.dimensions,
+		Vectors:    vi.vectors,
+	}
+	data, err := json.Marshal(snap)
+	vi.mu.RUnlock()
+
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filePath, data, 0644)
+}
+
+// LoadSnapshot restores vector embeddings state from disk.
+func (vi *VectorIndex) LoadSnapshot(filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	var snap vectorSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return err
+	}
+
+	vi.mu.Lock()
+	defer vi.mu.Unlock()
+	vi.dimensions = snap.Dimensions
+	vi.vectors = snap.Vectors
+	return nil
 }
