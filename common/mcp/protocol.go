@@ -13,8 +13,10 @@ import (
 	"github.com/crawler-monorepo/common/utils"
 	"github.com/crawler-monorepo/common/vector"
 	"github.com/crawler-monorepo/crawler-service/httpclient"
+	"github.com/crawler-monorepo/document-processor/processor"
 	"github.com/crawler-monorepo/embedding-service/embedder"
 	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
 // JSONRPCRequest represents an incoming MCP JSON-RPC 2.0 request.
@@ -149,6 +151,18 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 			htmlBytes, _ := io.ReadAll(limitedBody)
 
 			mdText, tokens, title := markdown.ConvertHTMLToMarkdown(res.FinalURL, htmlBytes)
+
+			// Auto-ingest scraped page into Document Processor, Tokenizer, Inverted Index, and Vector Store
+			cleanDoc, _ := processor.ProcessRawHTML(res.FinalURL, htmlBytes)
+			tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+			indexer.GlobalEngine.IndexDocument(
+				tokenizedDoc.URL,
+				tokenizedDoc.Title,
+				tokenizedDoc.CleanBody,
+				tokenizedDoc.TermPositions,
+				tokenizedDoc.TotalTokens,
+			)
+			embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
 
 			outText := fmt.Sprintf("# Title: %s\n# URL: %s\n# Tokens: %d\n\n%s", title, res.FinalURL, tokens, mdText)
 

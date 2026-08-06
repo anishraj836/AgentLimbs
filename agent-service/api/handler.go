@@ -14,8 +14,10 @@ import (
 	"github.com/crawler-monorepo/common/utils"
 	"github.com/crawler-monorepo/common/vector"
 	"github.com/crawler-monorepo/crawler-service/httpclient"
+	"github.com/crawler-monorepo/document-processor/processor"
 	"github.com/crawler-monorepo/embedding-service/embedder"
 	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
 type AgentHandler struct {
@@ -82,6 +84,19 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mdText, tokens, title := markdown.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes)
+
+	// Auto-ingest scraped page into Document Processor, Tokenizer, Inverted Index, and Vector Store
+	cleanDoc, _ := processor.ProcessRawHTML(result.FinalURL, htmlBytes)
+	tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+	indexer.GlobalEngine.IndexDocument(
+		tokenizedDoc.URL,
+		tokenizedDoc.Title,
+		tokenizedDoc.CleanBody,
+		tokenizedDoc.TermPositions,
+		tokenizedDoc.TotalTokens,
+	)
+	embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 
 	w.Header().Set("Content-Type", "application/json")
