@@ -52,6 +52,12 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 	var rpcErr *RPCError
 
 	switch req.Method {
+	case "notifications/initialized":
+		if req.ID == nil {
+			return nil, nil // Notifications do not send RPC responses
+		}
+		result = map[string]interface{}{}
+
 	case "initialize":
 		result = map[string]interface{}{
 			"protocolVersion": "2024-11-05",
@@ -238,10 +244,19 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 		rpcErr = &RPCError{Code: -32601, Message: "Method not found: " + req.Method}
 	}
 
-	return json.Marshal(JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result:  result,
-		Error:   rpcErr,
-	})
+	if rpcErr != nil {
+		respMap := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"error":   rpcErr,
+		}
+		return json.Marshal(respMap)
+	}
+
+	respMap := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      req.ID,
+		"result":  result,
+	}
+	return json.Marshal(respMap)
 }

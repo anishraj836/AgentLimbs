@@ -33,7 +33,9 @@ func main() {
 			continue
 		}
 
-		fmt.Println(string(respBytes))
+		if len(respBytes) > 0 {
+			fmt.Println(string(respBytes))
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
