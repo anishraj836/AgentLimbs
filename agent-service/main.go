@@ -27,6 +27,7 @@ func main() {
 
 	r.Post("/v1/scrape", handler.Scrape)
 	r.Get("/v1/scrape", handler.Scrape)
+	r.Post("/v1/extract", handler.Extract)
 	r.Post("/v1/agent/query", handler.AgentQuery)
 	r.Get("/v1/agent/query", handler.AgentQuery)
 	r.Get("/v1/agent/tools", handler.Tools)

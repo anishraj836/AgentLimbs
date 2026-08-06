@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/crawler-monorepo/common/bm25"
+	"github.com/crawler-monorepo/common/extractor"
 	"github.com/crawler-monorepo/common/hybrid"
 	"github.com/crawler-monorepo/common/markdown"
 	"github.com/crawler-monorepo/common/utils"
@@ -204,5 +205,47 @@ func (h *AgentHandler) Tools(w http.ResponseWriter, r *http.Request) {
 		"provider": "AgentLimbs AI Agent Tools",
 		"version":  "1.0.0",
 		"tools":    tools,
+	})
+}
+
+type ExtractRequest struct {
+	URL    string   `json:"url"`
+	Fields []string `json:"fields"`
+}
+
+func (h *AgentHandler) Extract(w http.ResponseWriter, r *http.Request) {
+	var req ExtractRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+
+	normURL, err := utils.NormalizeURL(req.URL)
+	if err != nil {
+		http.Error(w, `{"error":"Invalid URL format"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	result, err := h.httpClient.Fetch(ctx, normURL)
+	if err != nil {
+		http.Error(w, `{"error":"Failed to fetch URL: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer result.Response.Body.Close()
+
+	limitedBody := io.LimitReader(result.Response.Body, 10*1024*1024)
+	htmlBytes, _ := io.ReadAll(limitedBody)
+
+	mdText, _, title := markdown.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes)
+	extractedData := extractor.ExtractFields(mdText, req.Fields)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"url":       result.FinalURL,
+		"title":     title,
+		"extracted": extractedData,
 	})
 }
