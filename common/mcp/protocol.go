@@ -140,7 +140,8 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 			}
 
 			ctx := context.Background()
-			res, err := client.Fetch(ctx, normURL)
+			fetchURL := utils.TransformGitHubURL(normURL)
+			res, err := client.Fetch(ctx, fetchURL)
 			if err != nil {
 				rpcErr = &RPCError{Code: -32000, Message: "Fetch failed: " + err.Error()}
 				break
