@@ -42,17 +42,20 @@ It acts as the high-concurrency digital ingestion limbs for AI Agents, LLM pipel
                                                                              ▼
                                                                   ┌─────────────────────┐
                                                                   │ Agent Service (RRF) │
+                                                                  └──────────┬──────────┘
+                                                                             │
+                                                                             ▼
+                                                                  ┌─────────────────────┐
+                                                                  │  MCP Stdio Server   │
                                                                   └─────────────────────┘
                                                                              │
                                                                              ▼
-                                                                  [ LLM / AI Agent API ]
-                                                                  POST /v1/scrape
-                                                                  POST /v1/agent/query
+                                                                  [ Claude Desktop / Cursor ]
 ```
 
 ---
 
-## 🌟 Key Features Across All 3 Phases
+## 🌟 Key Features Across All 4 Phases
 
 ### Phase 1 — Distributed Web Crawler Infrastructure
 - **Frontier Service**: REST API (`POST /api/v1/seeds`) for seed URL ingestion with Redis-backed **Bloom Filter deduplication** ($O(1)$ lookup).
@@ -75,19 +78,38 @@ It acts as the high-concurrency digital ingestion limbs for AI Agents, LLM pipel
   $$\text{RRF\_Score}(d) = \frac{1}{k + \text{rank}_{\text{BM25}}(d)} + \frac{1}{k + \text{rank}_{\text{Vector}}(d)}$$
 - **OpenAI & LangChain Tool Definitions (`GET /v1/agent/tools`)**: Exposes native JSON Schema function calling definitions so AI Agents can automatically register AgentLimbs as a tool.
 
+### Phase 4 — Model Context Protocol (MCP) Server Layer
+- **Standard MCP Protocol (`version 2024-11-05`)**: Native JSON-RPC 2.0 stdio server (`mcp-server/`) allowing **Claude Desktop** and **Cursor IDE** to plug directly into AgentLimbs.
+- **MCP Tools Exposed**: `agent_limbs_scrape` and `agent_limbs_hybrid_search`.
+- **MCP Resources Exposed**: `agentlimbs://stats` (corpus metrics) and `agentlimbs://document/{id}`.
+
 ---
 
-## 📊 Microservice REST Endpoints
+## 📊 Microservice REST & MCP Interfaces
 
-| Service | Port | Endpoint / Method | Description |
+| Service | Protocol / Port | Method / Command | Description |
 | :--- | :---: | :--- | :--- |
+| **MCP Server** | **JSON-RPC stdio** | `mcp-server` | Native MCP Server for Claude Desktop & Cursor IDE |
 | **Frontier Service** | `8080` | `POST /api/v1/seeds` | Submit seed URLs: `{"urls": ["https://golang.org"]}` |
 | **Agent Service** | `8090` | `POST /v1/scrape` | Firecrawl-style Scrape API (returns LLM Markdown + token estimate) |
 | **Agent Service** | `8090` | `POST /v1/agent/query` | Hybrid RRF Search API (BM25 + AI Vector Semantic Ranks) |
 | **Agent Service** | `8090` | `GET /v1/agent/tools` | OpenAI Function Calling & LangChain Tool Definitions |
 | **Search API** | `8088` | `POST /search` | Search query: `{"query": "golang programming", "limit": 10}` |
 | **Search API** | `8088` | `GET /autocomplete?q=pro` | Prefix autocomplete query completions |
-| **Search API** | `8088` | `GET /stats` | Vocabulary size, document count, avg doc length |
+
+---
+
+## 🔌 Claude Desktop Integration (`claude_desktop_config.json`)
+
+```json
+{
+  "mcpServers": {
+    "agent-limbs": {
+      "command": "/path/to/AgentLimbs/mcp-server/mcp-server"
+    }
+  }
+}
+```
 
 ---
 
@@ -106,6 +128,7 @@ go vet ./...
 ## 💻 Tech Stack & Dependencies
 
 - **Language**: Go 1.21+
+- **Protocol Standard**: Model Context Protocol (MCP version `2024-11-05`)
 - **Event Bus**: Apache Kafka (`segmentio/kafka-go`)
 - **Cache & Locks**: Redis (`redis/go-redis/v9`)
 - **Database**: PostgreSQL (`jackc/pgx/v5`)
