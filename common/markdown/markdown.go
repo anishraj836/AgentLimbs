@@ -67,11 +67,15 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText str
 		}
 	})
 
-	// Process Main Text Elements
-	doc.Find("body").Find("h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, pre, code").Each(func(i int, s *goquery.Selection) {
+	// Process Main Block Elements (only top-level blocks to prevent child node duplication)
+	doc.Find("body").Find("h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, pre").Each(func(i int, s *goquery.Selection) {
+		// Skip if nested inside an outer block container already handled
+		if s.ParentsFiltered("p, ul, ol, blockquote, pre").Length() > 0 {
+			return
+		}
+
 		tagName := goquery.NodeName(s)
 		text := strings.TrimSpace(s.Text())
-
 		if text == "" {
 			return
 		}
@@ -108,7 +112,7 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText str
 			sb.WriteString("\n")
 		case "blockquote":
 			sb.WriteString(fmt.Sprintf("> %s\n\n", text))
-		case "pre", "code":
+		case "pre":
 			sb.WriteString(fmt.Sprintf("```\n%s\n```\n\n", text))
 		}
 	})
