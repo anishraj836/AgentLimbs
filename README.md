@@ -107,18 +107,36 @@ curl -X POST http://localhost:8080/api/v1/seeds \
 
 ---
 
-### 5. Connecting to Cloud Databases (Supabase / Neon.tech / AWS RDS)
-AgentLimbs adheres to 12-Factor App design principles. To switch from local Docker PostgreSQL/Redis to cloud databases, simply export environment variables:
+### 5. Step-by-Step Cloud Database Setup Guide (Supabase / Neon.tech / AWS RDS / Upstash)
+
+AgentLimbs adheres to 12-Factor App design principles. You can switch from local Docker databases to cloud infrastructure (Supabase, Neon.tech, AWS RDS, Upstash Redis) in 3 simple steps:
+
+#### Step 1: Provision Free Cloud Database Instances
+- **Cloud PostgreSQL**: Create a free project on **[Supabase.com](https://supabase.com)** or **[Neon.tech](https://neon.tech)** and copy your PostgreSQL Connection String URI.
+- **Cloud Redis**: Create a free database on **[Upstash.com](https://upstash.com)** and copy your Redis Host Address and Password.
+
+#### Step 2: Initialize Cloud Database Schema (`schema.sql`)
+Apply the AgentLimbs relational schema to your cloud database:
 
 ```bash
-# 1. Connect to Supabase or Neon.tech PostgreSQL
+# Option A: Apply schema via psql command-line
+psql "$DATABASE_URL" -f common/db/schema.sql
+
+# Option B: Paste contents of common/db/schema.sql directly into Supabase SQL Editor / Neon Console
+```
+
+#### Step 3: Configure Cloud Environment Variables
+Export your cloud credentials in your terminal or `.env` file:
+
+```bash
+# 1. Cloud PostgreSQL (sslmode=require is mandatory for cloud SSL connections)
 export DATABASE_URL="postgres://postgres.xxxx:password@db.xxxx.supabase.co:5432/postgres?sslmode=require"
 
-# 2. Connect to Upstash Redis / Managed Cloud Redis
+# 2. Cloud Redis (Upstash / Redis Enterprise)
 export REDIS_ADDR="redis-xxxx.upstash.io:6379"
 export REDIS_PASSWORD="your_upstash_password"
 
-# 3. Run Agent Service connected to Cloud Infrastructure
+# 3. Launch Agent Service connected to Cloud Infrastructure
 go run agent-service/main.go
 ```
 
