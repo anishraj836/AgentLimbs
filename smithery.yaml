@@ -1,0 +1,8 @@
+# Smithery.ai Configuration for AgentLimbs MCP Server
+startCommand:
+  type: stdio
+  config:
+    command: go
+    args:
+      - run
+      - ./mcp-server/main.go
