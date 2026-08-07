@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/crawler-monorepo/common/robotstxt"
@@ -105,8 +106,8 @@ func (c *Client) Fetch(ctx context.Context, url string) (*FetchResult, error) {
 	backoff := 1 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
-		// Check Robots.txt compliance engine before fetching
-		if !robotstxt.IsAllowed("AntigravityBot", url) {
+		// Check Robots.txt compliance engine before fetching (skip /robots.txt itself to prevent infinite recursion)
+		if !strings.HasSuffix(url, "/robots.txt") && !robotstxt.IsAllowed("AntigravityBot", url) {
 			return nil, fmt.Errorf("crawling disallowed by robots.txt rules for URL: %s", url)
 		}
 
