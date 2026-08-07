@@ -84,7 +84,7 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 				if clientKey == "" {
 					clientKey = r.URL.Query().Get("api_key")
 				}
-				if clientKey != apiKey {
+				if apiKey == "" || clientKey != apiKey {
 					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header"}`, http.StatusUnauthorized)
 					return
 				}

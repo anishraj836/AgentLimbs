@@ -33,6 +33,8 @@ func main() {
 
 	r.Post("/search", handler.Search)
 	r.Get("/search", handler.Search)
+	r.Post("/v1/search", handler.Search)
+	r.Get("/v1/search", handler.Search)
 	r.Get("/autocomplete", handler.Autocomplete)
 	r.Get("/document/{id}", handler.GetDocument)
 	r.Get("/stats", handler.Stats)

@@ -40,4 +40,26 @@ func TestSecurityMiddlewareAuthAndRateLimiting(t *testing.T) {
 	if rr3.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK with valid API key, got %d", rr3.Code)
 	}
+
+	// 4. Cloud mode with blank server apiKey -> Should return 401 Unauthorized for any request
+	cloudHandler := SecurityMiddleware("cloud", "", limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req4 := httptest.NewRequest("GET", "/v1/scrape", nil)
+	rr4 := httptest.NewRecorder()
+	cloudHandler.ServeHTTP(rr4, req4)
+	if rr4.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized in cloud mode with unconfigured apiKey, got %d", rr4.Code)
+	}
+
+	// 5. Local mode with blank server apiKey -> Should return 200 OK (local dev mode)
+	localHandler := SecurityMiddleware("local", "", limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req5 := httptest.NewRequest("GET", "/v1/scrape", nil)
+	rr5 := httptest.NewRecorder()
+	localHandler.ServeHTTP(rr5, req5)
+	if rr5.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK in local dev mode without apiKey, got %d", rr5.Code)
+	}
 }

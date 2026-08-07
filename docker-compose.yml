@@ -103,6 +103,36 @@ services:
     networks:
       - crawler_network
 
+  agent-service:
+    build:
+      context: .
+      dockerfile: agent-service/Dockerfile
+    container_name: agent-service
+    ports:
+      - "8090:8090"
+    environment:
+      EXECUTION_MODE: "local"
+      AGENT_API_KEY: "agentlimbs_sec_key_2026"
+      DATABASE_URL: "postgres://crawler:crawler_password@postgres:5432/crawler_db?sslmode=disable"
+    depends_on:
+      - postgres
+    networks:
+      - crawler_network
+
+  search-service:
+    build:
+      context: .
+      dockerfile: search-service/Dockerfile
+    container_name: search-service
+    ports:
+      - "8088:8088"
+    environment:
+      DATABASE_URL: "postgres://crawler:crawler_password@postgres:5432/crawler_db?sslmode=disable"
+    depends_on:
+      - postgres
+    networks:
+      - crawler_network
+
 volumes:
   zk-data:
   zk-log:
