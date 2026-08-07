@@ -66,15 +66,20 @@ func ConvertHTMLToMarkdownWithMode(sourceURL string, htmlBytes []byte, mode stri
 			}
 		})
 
-		if len(headers) > 0 || len(rows) > 0 {
-			if len(headers) > 0 {
-				sb.WriteString("| " + strings.Join(headers, " | ") + " |\n")
-				dividers := make([]string, len(headers))
-				for d := range dividers {
-					dividers[d] = "---"
-				}
-				sb.WriteString("| " + strings.Join(dividers, " | ") + " |\n")
+		if len(headers) == 0 && len(rows) > 0 {
+			for colIdx := range rows[0] {
+				headers = append(headers, fmt.Sprintf("Col %d", colIdx+1))
 			}
+		}
+
+		if len(headers) > 0 {
+			sb.WriteString("| " + strings.Join(headers, " | ") + " |\n")
+			dividers := make([]string, len(headers))
+			for d := range dividers {
+				dividers[d] = "---"
+			}
+			sb.WriteString("| " + strings.Join(dividers, " | ") + " |\n")
+
 			for _, r := range rows {
 				sb.WriteString("| " + strings.Join(r, " | ") + " |\n")
 			}
