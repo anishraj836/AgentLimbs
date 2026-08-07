@@ -7,6 +7,7 @@ import (
 	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/index"
 	"github.com/crawler-monorepo/common/trie"
+	"github.com/crawler-monorepo/embedding-service/embedder"
 	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
@@ -79,6 +80,7 @@ func (e *IndexEngine) LoadFromDB(ctx context.Context) error {
 		for term, positions := range tokDoc.TermPositions {
 			e.Trie.Insert(term, len(positions))
 		}
+		embedder.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
 	}
 	return nil
 }
