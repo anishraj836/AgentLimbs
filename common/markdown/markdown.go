@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	tiktoken "github.com/pkoukk/tiktoken-go"
 )
 
 // ConvertHTMLToMarkdown converts raw HTML into token-efficient Github-Flavored Markdown using clean_rag mode.
@@ -130,37 +131,23 @@ func ConvertHTMLToMarkdownWithMode(sourceURL string, htmlBytes []byte, mode stri
 	})
 
 	result := strings.TrimSpace(sb.String())
-	tokenEstimate = EstimateBPETokens(result)
+	tokenEstimate = CountBPETokens(result)
 
 	return result, tokenEstimate, title
 }
 
-// EstimateBPETokens calculates an accurate Byte-Pair Encoding (BPE) subword token count
-// matching OpenAI tiktoken (cl100k_base / o200k_base) and Anthropic Claude BPE tokenizers.
-func EstimateBPETokens(text string) int {
+// CountBPETokens calculates 100% exact Byte-Pair Encoding (BPE) subword tokens
+// using OpenAI's tiktoken cl100k_base BPE subword vocabulary.
+func CountBPETokens(text string) int {
 	if text == "" {
 		return 0
 	}
-
-	tokens := 0
-	words := strings.Fields(text)
-
-	for _, w := range words {
-		// Base word token
-		tokens++
-		// Additional subword tokens for long words (> 4 chars)
-		if len(w) > 4 {
-			tokens += (len(w) - 4) / 4
-		}
-		// Code symbols and punctuation count as distinct BPE tokens
-		for _, r := range w {
-			if strings.ContainsRune("{}[]()<>/\"':;=+#*-_", r) {
-				tokens++
-			}
-		}
+	tke, err := tiktoken.GetEncoding("cl100k_base")
+	if err != nil {
+		return len(strings.Fields(text))
 	}
-
-	return tokens
+	tokens := tke.Encode(text, nil, nil)
+	return len(tokens)
 }
 
 // formatElementText processes links and inline code elements directly within DOM nodes
