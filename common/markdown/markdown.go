@@ -17,8 +17,8 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText str
 		return string(htmlBytes), len(strings.Fields(string(htmlBytes))), sourceURL
 	}
 
-	// Remove non-content elements
-	doc.Find("script, style, noscript, iframe, nav, footer, header, form, svg, aside").Remove()
+	// Remove non-content elements and navigational sidebars
+	doc.Find("script, style, noscript, iframe, nav, footer, header, form, svg, aside, .toc, .table-of-contents, .breadcrumb, .sidebar, .menu, .ad, .advertisement").Remove()
 
 	title = strings.TrimSpace(doc.Find("title").Text())
 	if title == "" {
@@ -130,6 +130,11 @@ func formatElementText(s *goquery.Selection, baseURL *url.URL) string {
 		href, ok := a.Attr("href")
 		anchorText := strings.TrimSpace(a.Text())
 		if ok && anchorText != "" {
+			// Skip same-page anchor fragment links (e.g. #GOGC) to save thousands of LLM tokens
+			if strings.HasPrefix(href, "#") {
+				a.SetText(anchorText)
+				return
+			}
 			absURL := href
 			if parsed, err := url.Parse(href); err == nil && baseURL != nil {
 				absURL = baseURL.ResolveReference(parsed).String()
