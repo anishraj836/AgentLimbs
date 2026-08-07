@@ -14,14 +14,14 @@ import (
 type FrontierService struct {
 	kafkaProducer      *kafka.Producer
 	discoveredConsumer *kafka.Consumer
-	bloomFilter        *redis.BloomFilter
+	dedup              *redis.SetBasedDedup
 }
 
 func NewFrontierService(brokers []string, outTopic string) *FrontierService {
 	return &FrontierService{
 		kafkaProducer:      kafka.NewProducer(brokers, outTopic),
 		discoveredConsumer: kafka.NewConsumer(brokers, "frontier-group", "discovered_urls"),
-		bloomFilter:        redis.NewBloomFilter("crawler:bloom:urls"),
+		dedup:              redis.NewSetBasedDedup("crawler:dedup:urls"),
 	}
 }
 
@@ -69,9 +69,9 @@ func (f *FrontierService) processDiscoveredURL(ctx context.Context, rawURL strin
 		return
 	}
 
-	exists, err := f.bloomFilter.Exists(ctx, normURL)
+	exists, err := f.dedup.Exists(ctx, normURL)
 	if err != nil {
-		logger.Log.Error("Failed to check bloom filter for discovered URL", zap.Error(err))
+		logger.Log.Error("Failed to check deduplication set for discovered URL", zap.Error(err))
 		return
 	}
 	if exists {
@@ -88,15 +88,15 @@ func (f *FrontierService) processDiscoveredURL(ctx context.Context, rawURL strin
 		return
 	}
 
-	if _, err := f.bloomFilter.Add(ctx, normURL); err != nil {
-		logger.Log.Error("Failed to add discovered URL to bloom filter", zap.String("url", normURL), zap.Error(err))
+	if _, err := f.dedup.Add(ctx, normURL); err != nil {
+		logger.Log.Error("Failed to add discovered URL to deduplication set", zap.String("url", normURL), zap.Error(err))
 	} else {
 		logger.Log.Info("Queued discovered URL for crawling", zap.String("url", normURL))
 	}
 }
 
 // AddSeeds normalizes URLs, checks for duplicates, and queues them in Kafka.
-// The order is: check bloom → publish to Kafka → mark in bloom.
+// The order is: check dedup → publish to Kafka → mark in dedup.
 // If any single URL encounters an error, it is logged and processing continues for the remaining URLs.
 func (f *FrontierService) AddSeeds(ctx context.Context, urls []string) (int, error) {
 	addedCount := 0
@@ -108,9 +108,9 @@ func (f *FrontierService) AddSeeds(ctx context.Context, urls []string) (int, err
 		}
 
 		// Check if URL was already seen
-		exists, err := f.bloomFilter.Exists(ctx, normURL)
+		exists, err := f.dedup.Exists(ctx, normURL)
 		if err != nil {
-			logger.Log.Error("Failed to check bloom filter", zap.String("url", normURL), zap.Error(err))
+			logger.Log.Error("Failed to check deduplication set", zap.String("url", normURL), zap.Error(err))
 			continue
 		}
 		if exists {
@@ -131,8 +131,8 @@ func (f *FrontierService) AddSeeds(ctx context.Context, urls []string) (int, err
 		}
 
 		// Only mark as "seen" AFTER Kafka publish succeeded.
-		if _, err := f.bloomFilter.Add(ctx, normURL); err != nil {
-			logger.Log.Error("Failed to add to bloom filter (URL already queued)", zap.Error(err))
+		if _, err := f.dedup.Add(ctx, normURL); err != nil {
+			logger.Log.Error("Failed to add to deduplication set (URL already queued)", zap.Error(err))
 		}
 
 		addedCount++

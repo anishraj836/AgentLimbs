@@ -30,6 +30,8 @@ func main() {
 		execMode = "local"
 	}
 	apiKey := os.Getenv("AGENT_API_KEY")
+	// Note: Any exposed API keys must be rotated.
+	logger.Log.Info("SECURITY NOTE: Any exposed API keys must be rotated.")
 
 	maxReqsPerMin := 1800 // Local / Enterprise On-Premises Mode (30 req/sec)
 	if execMode == "cloud" {

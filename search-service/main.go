@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/crawler-monorepo/common/db"
+	"github.com/crawler-monorepo/common/kafka"
 	"github.com/crawler-monorepo/common/logger"
 	"github.com/crawler-monorepo/indexer-service/indexer"
 	"github.com/crawler-monorepo/search-service/api"
@@ -24,6 +26,40 @@ func main() {
 		logger.Log.Info("No existing persisted corpus loaded from DB", zap.Error(err))
 	}
 	indexer.GlobalEngine.StartPeriodicDBHydrator(context.Background(), 10*time.Second)
+
+	rawBrokers := strings.Split(os.Getenv("KAFKA_BROKERS"), ",")
+	var kafkaBrokers []string
+	for _, b := range rawBrokers {
+		if trimmed := strings.TrimSpace(b); trimmed != "" {
+			kafkaBrokers = append(kafkaBrokers, trimmed)
+		}
+	}
+
+	if len(kafkaBrokers) > 0 {
+		consumer := kafka.NewConsumer(kafkaBrokers, "search-group", "index_updates")
+		defer consumer.Close()
+
+		go func() {
+			ctx := context.Background()
+			for {
+				msg, err := consumer.ReadMessage(ctx)
+				if err != nil {
+					logger.Log.Error("Failed to read index_updates message", zap.Error(err))
+					continue
+				}
+
+				if err := indexer.GlobalEngine.LoadFromDB(ctx); err != nil {
+					logger.Log.Error("Failed to reload index from DB on index_updates event", zap.Error(err))
+				} else {
+					logger.Log.Info("Successfully reloaded index from DB via index_updates event")
+				}
+
+				if err := consumer.Commit(ctx, msg); err != nil {
+					logger.Log.Error("Failed to commit offset for index_updates message", zap.Error(err))
+				}
+			}
+		}()
+	}
 
 	handler := api.NewSearchHandler(indexer.GlobalEngine)
 
@@ -50,3 +86,4 @@ func main() {
 		logger.Log.Fatal("Search Service failed", zap.Error(err))
 	}
 }
+

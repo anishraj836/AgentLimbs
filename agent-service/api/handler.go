@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +55,43 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	return true
 }
 
+func parseIP(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	if parsed := net.ParseIP(s); parsed != nil {
+		return parsed.String()
+	}
+	return ""
+}
+
+// GetClientIP extracts client IP address checking X-Forwarded-For and X-Real-IP headers safely, falling back to r.RemoteAddr.
+func GetClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		for _, part := range strings.Split(xff, ",") {
+			if ip := parseIP(part); ip != "" {
+				return ip
+			}
+		}
+	}
+
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		if ip := parseIP(xri); ip != "" {
+			return ip
+		}
+	}
+
+	if ip := parseIP(r.RemoteAddr); ip != "" {
+		return ip
+	}
+
+	return r.RemoteAddr
+}
+
 func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,10 +105,7 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 				return
 			}
 
-			ip, _, err := net.SplitHostPort(r.RemoteAddr)
-			if err != nil {
-				ip = r.RemoteAddr
-			}
+			ip := GetClientIP(r)
 
 			// Rate limiting check
 			if !limiter.Allow(ip) {
