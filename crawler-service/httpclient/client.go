@@ -111,6 +111,7 @@ func (c *Client) Fetch(ctx context.Context, url string) (*FetchResult, error) {
 			return nil, err
 		}
 		req.Header.Set("User-Agent", "AntigravityBot/1.0 (+https://example.com/bot)")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 		// Do NOT manually set Accept-Encoding; Go handles gzip transparently.
 
 		resp, err := c.client.Do(req)
