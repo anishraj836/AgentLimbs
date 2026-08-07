@@ -78,13 +78,13 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 				return
 			}
 
-			// API Key auth check in cloud mode or when key is set
-			if mode == "cloud" || apiKey != "" {
+			// API Key auth check: if AGENT_API_KEY is set or mode is "cloud", enforce X-API-Key header
+			if apiKey != "" || mode == "cloud" {
 				clientKey := r.Header.Get("X-API-Key")
 				if clientKey == "" {
 					clientKey = r.URL.Query().Get("api_key")
 				}
-				if apiKey != "" && clientKey != apiKey {
+				if clientKey != apiKey {
 					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header"}`, http.StatusUnauthorized)
 					return
 				}
