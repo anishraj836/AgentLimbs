@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 
+	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/logger"
-	"github.com/crawler-monorepo/common/metrics"
 	"github.com/crawler-monorepo/indexer-service/indexer"
 	"github.com/crawler-monorepo/search-service/api"
 	"github.com/go-chi/chi/v5"
@@ -17,8 +18,10 @@ func main() {
 	logger.InitLogger(os.Getenv("ENV"))
 	defer logger.Sync()
 
-	logger.Log.Info("Starting Search Service...")
-	metrics.InitMetricsServer("8087")
+	db.InitDB(os.Getenv("DATABASE_URL"))
+	if err := indexer.GlobalEngine.LoadFromDB(context.Background()); err != nil {
+		logger.Log.Info("No existing persisted corpus loaded from DB", zap.Error(err))
+	}
 
 	handler := api.NewSearchHandler(indexer.GlobalEngine)
 

@@ -1,10 +1,13 @@
 package indexer
 
 import (
+	"context"
 	"sync"
 
+	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/index"
 	"github.com/crawler-monorepo/common/trie"
+	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
 // IndexEngine coordinates the Inverted Index, Trie Autocomplete, and Document Storage.
@@ -29,7 +32,7 @@ func NewIndexEngine() *IndexEngine {
 	}
 }
 
-// IndexDocument indexes a tokenized document into the Inverted Index and Trie.
+// IndexDocument indexes a tokenized document into the Inverted Index, Trie, and PostgreSQL.
 func (e *IndexEngine) IndexDocument(url, title, cleanBody string, termPositions map[string][]int, totalTokens int) {
 	docID := url
 
@@ -46,6 +49,33 @@ func (e *IndexEngine) IndexDocument(url, title, cleanBody string, termPositions 
 	for term, positions := range termPositions {
 		e.Trie.Insert(term, len(positions))
 	}
+
+	// Persist to PostgreSQL shared database
+	_ = db.SaveCrawledDocument(context.Background(), url, title, cleanBody, totalTokens)
+}
+
+// LoadFromDB loads all persisted documents from PostgreSQL into the in-memory index on microservice startup.
+func (e *IndexEngine) LoadFromDB(ctx context.Context) error {
+	docs, err := db.GetCrawledDocuments(ctx)
+	if err != nil || len(docs) == 0 {
+		return err
+	}
+
+	for _, d := range docs {
+		// Tokenize clean body and index
+		tokDoc := tokenizer.TokenizePipeline(d.URL, d.Title, d.CleanBody)
+		e.mu.Lock()
+		e.DocTitles[d.URL] = d.Title
+		e.DocURLs[d.URL] = d.URL
+		e.DocBodies[d.URL] = d.CleanBody
+		e.mu.Unlock()
+
+		e.Inverted.AddDocument(d.URL, tokDoc.TermPositions, tokDoc.TotalTokens)
+		for term, positions := range tokDoc.TermPositions {
+			e.Trie.Insert(term, len(positions))
+		}
+	}
+	return nil
 }
 
 // GetDocumentMetadata retrieves stored title, URL, and body for a document ID.
@@ -56,4 +86,26 @@ func (e *IndexEngine) GetDocumentMetadata(docID string) (title, url, body string
 	url = e.DocURLs[docID]
 	body = e.DocBodies[docID]
 	return
+}
+
+// GetMetadataMaps returns thread-safe copies of DocTitles, DocURLs, and DocBodies to prevent data races.
+func (e *IndexEngine) GetMetadataMaps() (titles, urls, bodies map[string]string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	titles = make(map[string]string, len(e.DocTitles))
+	urls = make(map[string]string, len(e.DocURLs))
+	bodies = make(map[string]string, len(e.DocBodies))
+
+	for k, v := range e.DocTitles {
+		titles[k] = v
+	}
+	for k, v := range e.DocURLs {
+		urls[k] = v
+	}
+	for k, v := range e.DocBodies {
+		bodies[k] = v
+	}
+
+	return titles, urls, bodies
 }

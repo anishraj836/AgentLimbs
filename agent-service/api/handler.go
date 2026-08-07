@@ -131,12 +131,13 @@ func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Sparse BM25 Keyword Search
+	titles, urls, bodies := indexer.GlobalEngine.GetMetadataMaps()
 	bm25Hits := bm25.RankDocuments(
 		req.Query,
 		indexer.GlobalEngine.Inverted,
-		indexer.GlobalEngine.DocTitles,
-		indexer.GlobalEngine.DocURLs,
-		indexer.GlobalEngine.DocBodies,
+		titles,
+		urls,
+		bodies,
 		req.TopK*2,
 	)
 

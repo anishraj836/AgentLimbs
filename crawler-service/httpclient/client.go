@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/crawler-monorepo/common/robotstxt"
 )
 
 // isPrivateIP checks if an IP is loopback, private RFC1918, link-local metadata, or IPv6 private.
@@ -103,6 +105,11 @@ func (c *Client) Fetch(ctx context.Context, url string) (*FetchResult, error) {
 	backoff := 1 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
+		// Check Robots.txt compliance engine before fetching
+		if !robotstxt.IsAllowed("AntigravityBot", url) {
+			return nil, fmt.Errorf("crawling disallowed by robots.txt rules for URL: %s", url)
+		}
+
 		// Create a fresh request on every attempt. Re-using a *http.Request
 		// after a redirect chain is unsafe because req.URL gets mutated to
 		// the redirect target, causing subsequent retries to hit the wrong URL.

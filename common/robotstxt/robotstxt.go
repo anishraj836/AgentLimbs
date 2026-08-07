@@ -83,3 +83,10 @@ func (rd *RobotsData) IsAllowed(userAgent, path string) bool {
 
 	return true
 }
+
+var GlobalRobotsCache = &RobotsData{groups: make([]RobotsGroup, 0)}
+
+// IsAllowed is a package-level helper for Robots.txt compliance check.
+func IsAllowed(userAgent, targetURL string) bool {
+	return GlobalRobotsCache.IsAllowed(userAgent, targetURL)
+}

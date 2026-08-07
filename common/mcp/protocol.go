@@ -188,12 +188,13 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 				topK = int(kVal)
 			}
 
+			titles, urls, bodies := indexer.GlobalEngine.GetMetadataMaps()
 			bm25Hits := bm25.RankDocuments(
 				query,
 				indexer.GlobalEngine.Inverted,
-				indexer.GlobalEngine.DocTitles,
-				indexer.GlobalEngine.DocURLs,
-				indexer.GlobalEngine.DocBodies,
+				titles,
+				urls,
+				bodies,
 				topK*2,
 			)
 
