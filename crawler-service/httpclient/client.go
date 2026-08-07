@@ -45,7 +45,12 @@ func isPrivateIP(ip net.IP) bool {
 
 type Client struct {
 	client                 *http.Client
-	AllowLoopbackForTesting bool
+	allowLoopbackForTesting bool
+}
+
+// EnableLoopbackForTesting enables local loopback fetches strictly for unit testing.
+func (c *Client) EnableLoopbackForTesting() {
+	c.allowLoopbackForTesting = true
 }
 
 func NewClient() *Client {
@@ -74,7 +79,7 @@ func NewClient() *Client {
 			}
 
 			for _, ip := range ips {
-				if !c.AllowLoopbackForTesting && isPrivateIP(ip) {
+				if !c.allowLoopbackForTesting && isPrivateIP(ip) {
 					return nil, fmt.Errorf("blocked request to private/internal IP: %s (%s)", ip.String(), host)
 				}
 			}

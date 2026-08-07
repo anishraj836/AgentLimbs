@@ -76,7 +76,7 @@ func TestEndToEndHTTPTestServerRobotsGating(t *testing.T) {
 	defer ts.Close()
 
 	client := NewClient()
-	client.AllowLoopbackForTesting = true // Enable loopback for local httptest.Server
+	client.EnableLoopbackForTesting() // Enable loopback for local httptest.Server
 	ctx := context.Background()
 
 	// 1. Fetch allowed URL -> Must succeed
