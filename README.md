@@ -7,7 +7,107 @@ It acts as the high-concurrency digital ingestion limbs for AI Agents, LLM pipel
 
 ---
 
-## 🚀 System Pipeline & Microservices
+## 📖 4 Ways to Use AgentLimbs (Developer Quick Start)
+
+### 1. Claude Desktop (Anthropic MCP Integration)
+Connect AgentLimbs directly to **Claude Desktop** to give Claude live, token-efficient web scraping and hybrid RAG search tools.
+
+1. **Build the MCP Executable**:
+   ```bash
+   cd mcp-server
+   go build -o agent-limbs-mcp main.go
+   ```
+2. **Add to Claude Desktop Configuration**:
+   Open `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS and add:
+   ```json
+   {
+     "mcpServers": {
+       "agent-limbs": {
+         "command": "/absolute/path/to/mcp-server/agent-limbs-mcp"
+       }
+     }
+   }
+   ```
+3. **Restart Claude Desktop** (`Cmd + Q` and reopen).
+4. **Prompt Claude**:
+   > *"Use AgentLimbs to scrape `https://golang.org` and summarize the core principles of Go."*  
+   > *"Use `agent_limbs_hybrid_search` to search for 'concurrency goroutines' across indexed pages."*
+
+---
+
+### 2. Cursor IDE Integration
+Add AgentLimbs as a native MCP server inside **Cursor IDE**:
+
+1. Open **Cursor Settings** ➔ **Features** ➔ **MCP Servers**.
+2. Click **+ Add New MCP Server**.
+3. Fill in:
+   - **Name**: `agent-limbs`
+   - **Type**: `command`
+   - **Command**: `/absolute/path/to/mcp-server/agent-limbs-mcp`
+4. Now Cursor AI (GPT-4o / Claude Sonnet / DeepSeek) can scrape docs and search your local index while you code!
+
+---
+
+### 3. REST API (Firecrawl-Style Scraper & Hybrid Search)
+Run AgentLimbs as a standalone REST HTTP service on port `8090`:
+
+```bash
+# Start Agent Service
+go run agent-service/main.go
+```
+
+#### A. Scrape Web Page to Clean Markdown (`POST /v1/scrape`)
+```bash
+curl -X POST http://localhost:8090/v1/scrape \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://golang.org",
+    "mode": "clean_rag"
+  }'
+```
+*Supports 3 Extraction Modes*:
+- `"clean_rag"` (Default): Strips DOM noise and same-page anchor URLs for **85%+ token savings**.
+- `"preserve_links"`: Preserves full Markdown URLs for generating clickable link lists.
+- `"raw"`: Minimal filtering; preserves full original DOM tags.
+
+#### B. Structured JSON Field Extractor (`POST /v1/extract`)
+```bash
+curl -X POST http://localhost:8090/v1/extract \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://go.dev",
+    "fields": ["Title", "Concurrency", "License"]
+  }'
+```
+
+#### C. Hybrid RRF Search Query (`POST /v1/agent/query`)
+```bash
+curl -X POST http://localhost:8090/v1/agent/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "goroutines concurrency memory safety",
+    "top_k": 5
+  }'
+```
+
+---
+
+### 4. Distributed Production Stack (Docker Compose & Cloud)
+Run the full 6-microservice event-driven crawling pipeline backed by Kafka and Redis:
+
+```bash
+# Launch full Kafka, Redis, Postgres & Microservices stack
+docker-compose up -d
+
+# Seed target URLs into Frontier Service
+curl -X POST http://localhost:8080/api/v1/seeds \
+  -H "Content-Type: application/json" \
+  -d '{"urls": ["https://golang.org", "https://python.org", "https://rust-lang.org"]}'
+```
+
+---
+
+## 🚀 System Pipeline & Microservices Architecture
 
 ```text
 [ Seed URLs / API ] ──► POST /api/v1/seeds
@@ -20,7 +120,7 @@ It acts as the high-concurrency digital ingestion limbs for AI Agents, LLM pipel
                                ▼
                     ┌─────────────────────┐
                     │   Crawler Service   │ ──► Redis Rate-Limiter (Politeness)
-                    └──────────┬──────────┘ ──► Local Gzip File Storage
+                    └──────────┬──────────┘ ──► Local Gzip File Storage + SSRF Guard
                                │ Kafka: downloaded_pages
                                ├──────────────────────────────────┐
                                ▼                                  ▼
@@ -55,11 +155,11 @@ It acts as the high-concurrency digital ingestion limbs for AI Agents, LLM pipel
 
 ---
 
-## 🌟 Key Features Across All 4 Phases
+## 🌟 Key Features Across All 5 Phases
 
 ### Phase 1 — Distributed Web Crawler Infrastructure
 - **Frontier Service**: REST API (`POST /api/v1/seeds`) for seed URL ingestion with Redis-backed **Bloom Filter deduplication** ($O(1)$ lookup).
-- **Crawler Service**: Bounded Go worker routines (`concurrencyLimit: 50`), **Redis `SetNX` domain politeness rate limiting**, transparent Gzip disk storage, `io.LimitReader` memory safety caps (10MB limit), and exponential backoff HTTP retries.
+- **Crawler Service**: Bounded Go worker routines (`concurrencyLimit: 50`), **Redis `SetNX` domain politeness rate limiting**, transparent Gzip disk storage, `io.LimitReader` memory safety caps (10MB limit), and Private IP Egress Guard (SSRF protection).
 - **Parser Service**: Concurrent DOM parser using `goquery` to extract, normalize, and resolve absolute outbound URLs, closing the autonomous crawling loop.
 - **Kafka Resilience**: Custom, thread-safe contiguous **OffsetTracker** eliminating out-of-order Kafka message commit data loss, plus **Dead-Letter Queue (`crawl_failed_dlq`)** error routing.
 
@@ -83,33 +183,29 @@ It acts as the high-concurrency digital ingestion limbs for AI Agents, LLM pipel
 - **MCP Tools Exposed**: `agent_limbs_scrape` and `agent_limbs_hybrid_search`.
 - **MCP Resources Exposed**: `agentlimbs://stats` (corpus metrics) and `agentlimbs://document/{id}`.
 
+### Phase 5 — Complete Enterprise Suite
+- **Dual-Engine SPA Renderer**: Fast Path Go `net/http` + Slow Path `chromedp` DOM rendering for dynamic React/Vue SPAs.
+- **Robots.txt Compliance Engine**: Parses `robots.txt` rules (`User-agent`, `Disallow`, `Crawl-delay`) and caches rules in Redis.
+- **Sitemap.xml Auto-Discovery Engine**: Parses XML sitemap indices to auto-discover canonical site URLs.
+- **Web Graph PageRank Engine**: Computes Google-style PageRank domain authority scores using power iteration matrix math.
+- **Neural Cross-Encoder Reranker**: Performs deep contextual query-document relevance scoring on candidate search hits.
+- **Structured JSON Schema Extractor API (`POST /v1/extract`)**: Firecrawl-style structured JSON field extraction from Markdown.
+- **Real-Time Webhooks Push Engine**: Asynchronous HTTP POST push notifications delivered to external endpoints upon indexing.
+
 ---
 
-## 📊 Microservice REST & MCP Interfaces
+## 📊 REST & MCP Interface Reference
 
-| Service | Protocol / Port | Method / Command | Description |
+| Service | Protocol / Port | Method / Endpoint | Description |
 | :--- | :---: | :--- | :--- |
 | **MCP Server** | **JSON-RPC stdio** | `mcp-server` | Native MCP Server for Claude Desktop & Cursor IDE |
-| **Frontier Service** | `8080` | `POST /api/v1/seeds` | Submit seed URLs: `{"urls": ["https://golang.org"]}` |
-| **Agent Service** | `8090` | `POST /v1/scrape` | Firecrawl-style Scrape API (returns LLM Markdown + token estimate) |
+| **Agent Service** | `8090` | `POST /v1/scrape` | Firecrawl-style Scrape API (returns Markdown + token estimate) |
+| **Agent Service** | `8090` | `POST /v1/extract` | Structured JSON field extraction endpoint |
 | **Agent Service** | `8090` | `POST /v1/agent/query` | Hybrid RRF Search API (BM25 + AI Vector Semantic Ranks) |
 | **Agent Service** | `8090` | `GET /v1/agent/tools` | OpenAI Function Calling & LangChain Tool Definitions |
+| **Frontier Service** | `8080` | `POST /api/v1/seeds` | Submit seed URLs: `{"urls": ["https://golang.org"]}` |
 | **Search API** | `8088` | `POST /search` | Search query: `{"query": "golang programming", "limit": 10}` |
 | **Search API** | `8088` | `GET /autocomplete?q=pro` | Prefix autocomplete query completions |
-
----
-
-## 🔌 Claude Desktop Integration (`claude_desktop_config.json`)
-
-```json
-{
-  "mcpServers": {
-    "agent-limbs": {
-      "command": "/path/to/AgentLimbs/mcp-server/mcp-server"
-    }
-  }
-}
-```
 
 ---
 
@@ -119,7 +215,10 @@ It acts as the high-concurrency digital ingestion limbs for AI Agents, LLM pipel
 # Run unit tests across all packages
 go test -v ./...
 
-# Run static analysis
+# Run thread race detector (100% data-race free)
+go test -race -v ./...
+
+# Run static code analysis
 go vet ./...
 ```
 
@@ -134,3 +233,4 @@ go vet ./...
 - **Database**: PostgreSQL (`jackc/pgx/v5`)
 - **DOM Parser**: `goquery` (`PuerkitoBio/goquery`)
 - **Observability**: Prometheus & Grafana
+- **License**: MIT
