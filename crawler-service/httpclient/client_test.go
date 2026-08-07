@@ -1,7 +1,11 @@
 package httpclient
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/crawler-monorepo/common/robotstxt"
@@ -52,5 +56,42 @@ func TestRobotsTxtNetworkFetchAndDisallow(t *testing.T) {
 	// 3. Test private URL -> Should be DISALLOWED
 	if robotstxt.IsAllowed("AntigravityBot", "https://example.com/private/data") {
 		t.Fatalf("expected private URL to be disallowed by robots.txt")
+	}
+}
+
+func TestEndToEndHTTPTestServerRobotsGating(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("User-agent: *\nDisallow: /blocked/\n"))
+		case "/allowed/page":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK Content"))
+		case "/blocked/page":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Blocked Content"))
+		}
+	}))
+	defer ts.Close()
+
+	client := NewClient()
+	client.AllowLoopbackForTesting = true // Enable loopback for local httptest.Server
+	ctx := context.Background()
+
+	// 1. Fetch allowed URL -> Must succeed
+	res, err := client.Fetch(ctx, ts.URL+"/allowed/page")
+	if err != nil {
+		t.Fatalf("expected /allowed/page to succeed, got: %v", err)
+	}
+	res.Response.Body.Close()
+
+	// 2. Fetch blocked URL -> Must trigger EnsureRobotsCached, parse Disallow: /blocked/, and FAIL
+	_, err = client.Fetch(ctx, ts.URL+"/blocked/page")
+	if err == nil {
+		t.Fatalf("expected /blocked/page to fail due to robots.txt disallow rule, but it succeeded")
+	}
+	if !strings.Contains(err.Error(), "crawling disallowed by robots.txt rules") {
+		t.Fatalf("expected disallowed error message, got: %v", err)
 	}
 }

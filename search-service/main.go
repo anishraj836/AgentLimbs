@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/logger"
@@ -22,6 +23,7 @@ func main() {
 	if err := indexer.GlobalEngine.LoadFromDB(context.Background()); err != nil {
 		logger.Log.Info("No existing persisted corpus loaded from DB", zap.Error(err))
 	}
+	indexer.GlobalEngine.StartPeriodicDBHydrator(context.Background(), 10*time.Second)
 
 	handler := api.NewSearchHandler(indexer.GlobalEngine)
 

@@ -44,10 +44,13 @@ func isPrivateIP(ip net.IP) bool {
 }
 
 type Client struct {
-	client *http.Client
+	client                 *http.Client
+	AllowLoopbackForTesting bool
 }
 
 func NewClient() *Client {
+	c := &Client{}
+
 	dialer := &net.Dialer{
 		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -71,7 +74,7 @@ func NewClient() *Client {
 			}
 
 			for _, ip := range ips {
-				if isPrivateIP(ip) {
+				if !c.AllowLoopbackForTesting && isPrivateIP(ip) {
 					return nil, fmt.Errorf("blocked request to private/internal IP: %s (%s)", ip.String(), host)
 				}
 			}
@@ -80,18 +83,18 @@ func NewClient() *Client {
 		},
 	}
 
-	return &Client{
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return fmt.Errorf("too many redirects (>10)")
-				}
-				return nil
-			},
+	c.client = &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects (>10)")
+			}
+			return nil
 		},
 	}
+
+	return c
 }
 
 // FetchResult wraps the HTTP response along with the final URL after redirects.

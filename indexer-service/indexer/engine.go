@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/index"
@@ -83,6 +84,23 @@ func (e *IndexEngine) LoadFromDB(ctx context.Context) error {
 		embedder.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
 	}
 	return nil
+}
+
+// StartPeriodicDBHydrator runs a background goroutine that periodically polls PostgreSQL
+// for newly ingested documents and automatically hydrates them into memory without restarting services.
+func (e *IndexEngine) StartPeriodicDBHydrator(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				_ = e.LoadFromDB(ctx)
+			}
+		}
+	}()
 }
 
 // GetDocumentMetadata retrieves stored title, URL, and body for a document ID.
