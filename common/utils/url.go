@@ -64,13 +64,17 @@ func GetDomain(rawURL string) (string, error) {
 
 // TransformGitHubURL converts standard GitHub repository URLs into direct raw Markdown URLs.
 func TransformGitHubURL(rawURL string) string {
-	if strings.Contains(rawURL, "github.com") && !strings.Contains(rawURL, "raw.githubusercontent.com") {
+	if strings.Contains(rawURL, "raw.githubusercontent.com") {
+		return rawURL
+	}
+	if strings.Contains(rawURL, "github.com") {
 		parts := strings.Split(rawURL, "github.com/")
 		if len(parts) == 2 {
 			repoPath := strings.Trim(parts[1], "/")
 			segments := strings.Split(repoPath, "/")
 			if len(segments) == 2 {
-				return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/README.md", segments[0], segments[1])
+				// If a full repo root URL is provided, prefer master/main raw URL if explicit, else fallback
+				return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/master/README.md", segments[0], segments[1])
 			}
 		}
 	}
