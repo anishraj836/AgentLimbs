@@ -12,33 +12,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/crawler-monorepo/common/bm25"
-	"github.com/crawler-monorepo/common/db"
-	"github.com/crawler-monorepo/common/extractor"
-	"github.com/crawler-monorepo/common/hybrid"
-	"github.com/crawler-monorepo/common/markdown"
 	"github.com/crawler-monorepo/common/utils"
-	"github.com/crawler-monorepo/common/vector"
-	"github.com/crawler-monorepo/crawler-service/httpclient"
-	"github.com/crawler-monorepo/document-processor/processor"
 	"github.com/crawler-monorepo/embedding-service/embedder"
-	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/internal/crawler"
+	"github.com/crawler-monorepo/internal/extractor"
+	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/search"
+	"github.com/crawler-monorepo/internal/storage"
 	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
 // ClampTTL validates and clamps LLM-supplied or API-supplied TTL seconds within safe boundaries.
-// - llmTTL == 0: Permanent (no expiration)
-// - llmTTL < 0: Default 7-day TTL fallback
-// - llmTTL > 0: Clamped between 5 minutes (300s) and 30 days (2592000s)
 func ClampTTL(llmTTL int) (time.Duration, bool) {
 	if llmTTL == 0 {
-		return 0, false // Permanent document (no expiration)
+		return 0, false
 	}
 	if llmTTL < 0 {
-		return 7 * 24 * time.Hour, true // Default 7-day TTL
+		return 7 * 24 * time.Hour, true
 	}
 
-	// Clamp between 5 minutes and 30 days
 	if llmTTL < 300 {
 		return 300 * time.Second, true
 	}
@@ -100,12 +92,10 @@ func isTrustedProxy(ipStr string) bool {
 		return false
 	}
 
-	// 1. Loopback IPs (127.0.0.1, ::1) are trusted proxies by default
 	if ip.IsLoopback() {
 		return true
 	}
 
-	// 2. Custom TRUSTED_PROXIES env var (comma-separated IPs/CIDRs)
 	if envProxies := os.Getenv("TRUSTED_PROXIES"); envProxies != "" {
 		for _, raw := range strings.Split(envProxies, ",") {
 			raw = strings.TrimSpace(raw)
@@ -127,12 +117,9 @@ func isTrustedProxy(ipStr string) bool {
 	return false
 }
 
-// GetClientIP extracts client IP address checking X-Forwarded-For and X-Real-IP headers ONLY if r.RemoteAddr is a trusted proxy.
-// If r.RemoteAddr is an untrusted remote client, proxy headers are ignored to prevent rate limiter bypass via header spoofing.
 func GetClientIP(r *http.Request) string {
 	remoteIP := parseIP(r.RemoteAddr)
 
-	// Direct remote IP is untrusted -> do NOT trust client-supplied headers!
 	if !isTrustedProxy(remoteIP) {
 		if remoteIP != "" {
 			return remoteIP
@@ -140,7 +127,6 @@ func GetClientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 
-	// Remote connection comes from a trusted proxy -> inspect headers safely
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		for _, part := range strings.Split(xff, ",") {
 			if ip := parseIP(part); ip != "" {
@@ -164,7 +150,6 @@ func GetClientIP(r *http.Request) string {
 func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// CORS headers for frontend integration
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
@@ -176,13 +161,11 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 
 			ip := GetClientIP(r)
 
-			// Rate limiting check
 			if !limiter.Allow(ip) {
 				http.Error(w, `{"error":"Rate limit exceeded. Please try again later."}`, http.StatusTooManyRequests)
 				return
 			}
 
-			// API Key auth check: if AGENT_API_KEY is set or mode is "cloud", enforce X-API-Key header
 			if apiKey != "" || mode == "cloud" {
 				clientKey := r.Header.Get("X-API-Key")
 				if clientKey == "" {
@@ -200,12 +183,12 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 }
 
 type AgentHandler struct {
-	httpClient *httpclient.Client
+	httpClient *crawler.Client
 }
 
 func NewAgentHandler() *AgentHandler {
 	return &AgentHandler{
-		httpClient: httpclient.NewClient(),
+		httpClient: crawler.NewClient(),
 	}
 }
 
@@ -266,12 +249,11 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mdText, tokens, title := markdown.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes)
+	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes, "clean_rag")
 
-	// Auto-ingest scraped page into Document Processor, Tokenizer, Inverted Index, and Vector Store
-	cleanDoc, _ := processor.ProcessRawHTML(result.FinalURL, htmlBytes)
+	cleanDoc, _ := extractor.ProcessRawHTML(result.FinalURL, htmlBytes)
 	tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
-	indexer.GlobalEngine.IndexDocument(
+	index.GlobalEngine.IndexDocument(
 		tokenizedDoc.URL,
 		tokenizedDoc.Title,
 		tokenizedDoc.CleanBody,
@@ -280,7 +262,7 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if ttlDuration, hasTTL := ClampTTL(req.TTLSeconds); hasTTL {
-		_ = db.SaveCrawledDocumentWithTTL(
+		_ = storage.SaveCrawledDocumentWithTTL(
 			r.Context(),
 			tokenizedDoc.URL,
 			tokenizedDoc.Title,
@@ -325,23 +307,20 @@ func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
 		req.TopK = 5
 	}
 
-	// 1. Sparse BM25 Keyword Search
-	titles, urls, bodies := indexer.GlobalEngine.GetMetadataMaps()
-	bm25Hits := bm25.RankDocuments(
+	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
+	bm25Hits := index.RankDocuments(
 		req.Query,
-		indexer.GlobalEngine.Inverted,
+		index.GlobalEngine.Inverted,
 		titles,
 		urls,
 		bodies,
 		req.TopK*2,
 	)
 
-	// 2. Dense Vector Semantic Search
-	queryVec := vector.GenerateFeatureVector(req.Query, 128)
+	queryVec := index.GenerateFeatureVector(req.Query, 128)
 	vecHits := embedder.GlobalVectorIndex.SearchNearest(queryVec, req.TopK*2)
 
-	// 3. Reciprocal Rank Fusion (RRF)
-	fusedHits := hybrid.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
+	fusedHits := search.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 
@@ -435,7 +414,7 @@ func (h *AgentHandler) Extract(w http.ResponseWriter, r *http.Request) {
 	limitedBody := io.LimitReader(result.Response.Body, 10*1024*1024)
 	htmlBytes, _ := io.ReadAll(limitedBody)
 
-	mdText, _, title := markdown.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes)
+	mdText, _, title := extractor.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes, "clean_rag")
 	extractedData := extractor.ExtractFields(mdText, req.Fields)
 
 	w.Header().Set("Content-Type", "application/json")

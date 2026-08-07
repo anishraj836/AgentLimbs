@@ -14,17 +14,14 @@ import (
 	"time"
 
 	"github.com/crawler-monorepo/agent-service/api"
-	"github.com/crawler-monorepo/common/bm25"
-	"github.com/crawler-monorepo/common/db"
-	"github.com/crawler-monorepo/common/hybrid"
 	"github.com/crawler-monorepo/common/logger"
-	"github.com/crawler-monorepo/common/markdown"
 	"github.com/crawler-monorepo/common/utils"
-	"github.com/crawler-monorepo/common/vector"
-	"github.com/crawler-monorepo/crawler-service/httpclient"
-	"github.com/crawler-monorepo/document-processor/processor"
 	"github.com/crawler-monorepo/embedding-service/embedder"
-	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/internal/crawler"
+	"github.com/crawler-monorepo/internal/extractor"
+	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/search"
+	"github.com/crawler-monorepo/internal/storage"
 	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -32,7 +29,7 @@ import (
 )
 
 type EmbeddedServer struct {
-	httpClient *httpclient.Client
+	httpClient *crawler.Client
 	dataDir    string
 }
 
@@ -41,12 +38,12 @@ func NewEmbeddedServer(dataDir string) *EmbeddedServer {
 		dataDir = "data"
 	}
 	return &EmbeddedServer{
-		httpClient: httpclient.NewClient(),
+		httpClient: crawler.NewClient(),
 		dataDir:    dataDir,
 	}
 }
 
-func (s *EmbeddedServer) HTTPClient() *httpclient.Client {
+func (s *EmbeddedServer) HTTPClient() *crawler.Client {
 	return s.httpClient
 }
 
@@ -116,12 +113,11 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mdText, tokens, title := markdown.ConvertHTMLToMarkdownWithMode(res.FinalURL, htmlBytes, req.Mode)
+	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(res.FinalURL, htmlBytes, req.Mode)
 
-	// Auto-ingest scraped page into Document Processor, Tokenizer, Inverted Index, and Vector Store
-	cleanDoc, _ := processor.ProcessRawHTML(res.FinalURL, htmlBytes)
+	cleanDoc, _ := extractor.ProcessRawHTML(res.FinalURL, htmlBytes)
 	tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
-	indexer.GlobalEngine.IndexDocumentWithSource(
+	index.GlobalEngine.IndexDocumentWithSource(
 		tokenizedDoc.URL,
 		tokenizedDoc.Title,
 		tokenizedDoc.CleanBody,
@@ -134,7 +130,7 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
 
 	if ttlDuration, hasTTL := api.ClampTTL(req.TTLSeconds); hasTTL {
-		_ = db.SaveCrawledDocumentWithTTL(
+		_ = storage.SaveCrawledDocumentWithTTL(
 			r.Context(),
 			tokenizedDoc.URL,
 			tokenizedDoc.Title,
@@ -145,7 +141,7 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 			ttlDuration,
 		)
 	} else {
-		_ = db.SaveCrawledDocument(
+		_ = storage.SaveCrawledDocument(
 			r.Context(),
 			tokenizedDoc.URL,
 			tokenizedDoc.Title,
@@ -156,7 +152,6 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// Persist to file fallback snapshots
 	saveStorage(s.dataDir)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
@@ -181,7 +176,7 @@ type SearchResponse struct {
 	Query     string                  `json:"query"`
 	LatencyMs float64                 `json:"latency_ms"`
 	TotalHits int                     `json:"total_hits"`
-	Results   []hybrid.HybridSearchHit `json:"results"`
+	Results   []search.HybridSearchHit `json:"results"`
 }
 
 func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
@@ -202,23 +197,20 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 		req.TopK = 5
 	}
 
-	// 1. Sparse BM25 Keyword Search
-	titles, urls, bodies := indexer.GlobalEngine.GetMetadataMaps()
-	bm25Hits := bm25.RankDocuments(
+	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
+	bm25Hits := index.RankDocuments(
 		req.Query,
-		indexer.GlobalEngine.Inverted,
+		index.GlobalEngine.Inverted,
 		titles,
 		urls,
 		bodies,
 		req.TopK*2,
 	)
 
-	// 2. Dense Vector Semantic Search
-	queryVec := vector.GenerateFeatureVector(req.Query, 128)
+	queryVec := index.GenerateFeatureVector(req.Query, 128)
 	vecHits := embedder.GlobalVectorIndex.SearchNearest(queryVec, req.TopK*2)
 
-	// 3. Reciprocal Rank Fusion (RRF)
-	fusedHits := hybrid.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
+	fusedHits := search.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 
@@ -254,7 +246,7 @@ func initStorage(dataDir string) {
 
 	indexPath := filepath.Join(dataDir, "inverted_index.json")
 	if _, err := os.Stat(indexPath); err == nil {
-		if err := indexer.GlobalEngine.Inverted.LoadSnapshot(indexPath); err == nil {
+		if err := index.GlobalEngine.Inverted.LoadSnapshot(indexPath); err == nil {
 			logger.Log.Info("Loaded inverted index snapshot from file fallback: " + indexPath)
 		}
 	}
@@ -266,12 +258,11 @@ func initStorage(dataDir string) {
 		}
 	}
 
-	// Load fallback documents if stored in crawled_pages.json
-	docs, err := db.GetCrawledDocuments(context.Background())
+	docs, err := storage.GetCrawledDocuments(context.Background())
 	if err == nil && len(docs) > 0 {
 		for _, d := range docs {
 			tokDoc := tokenizer.TokenizePipeline(d.URL, d.Title, d.CleanBody)
-			indexer.GlobalEngine.IndexDocumentWithSource(
+			index.GlobalEngine.IndexDocumentWithSource(
 				tokDoc.URL,
 				tokDoc.Title,
 				tokDoc.CleanBody,
@@ -293,7 +284,7 @@ func saveStorage(dataDir string) {
 	_ = os.MkdirAll(dataDir, 0755)
 
 	indexPath := filepath.Join(dataDir, "inverted_index.json")
-	_ = indexer.GlobalEngine.Inverted.SaveSnapshot(indexPath)
+	_ = index.GlobalEngine.Inverted.SaveSnapshot(indexPath)
 
 	vectorPath := filepath.Join(dataDir, "vector_index.json")
 	_ = embedder.GlobalVectorIndex.SaveSnapshot(vectorPath)

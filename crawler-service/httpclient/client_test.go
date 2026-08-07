@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/crawler-monorepo/common/robotstxt"
+	"github.com/crawler-monorepo/internal/crawler"
 )
 
 func TestPrivateIPGuard(t *testing.T) {
@@ -23,8 +24,8 @@ func TestPrivateIPGuard(t *testing.T) {
 
 	for _, ipStr := range privateIPs {
 		ip := net.ParseIP(ipStr)
-		if !isPrivateIP(ip) {
-			t.Errorf("expected isPrivateIP(%s) to be true, got false", ipStr)
+		if !crawler.IsPrivateIP(ip) {
+			t.Errorf("expected IsPrivateIP(%s) to be true, got false", ipStr)
 		}
 	}
 
@@ -36,8 +37,8 @@ func TestPrivateIPGuard(t *testing.T) {
 
 	for _, ipStr := range publicIPs {
 		ip := net.ParseIP(ipStr)
-		if isPrivateIP(ip) {
-			t.Errorf("expected isPrivateIP(%s) to be false, got true", ipStr)
+		if crawler.IsPrivateIP(ip) {
+			t.Errorf("expected IsPrivateIP(%s) to be false, got true", ipStr)
 		}
 	}
 }
@@ -85,7 +86,7 @@ func TestEndToEndHTTPTestServerRobotsGating(t *testing.T) {
 	defer ts.Close()
 
 	client := NewClient()
-	client.allowLoopbackForTesting = true // Set unexported field directly in white-box package test
+	client.SetAllowLoopbackForTesting(true)
 	ctx := context.Background()
 
 	// 1. Fetch allowed URL -> Must succeed
@@ -190,7 +191,7 @@ func TestSteppingRetryBackoff(t *testing.T) {
 	robotstxt.GlobalDomainCache.FetchAndCache("127.0.0.1", "User-agent: *\nAllow: /\n")
 
 	client := NewClient()
-	client.allowLoopbackForTesting = true
+	client.SetAllowLoopbackForTesting(true)
 	ctx := context.Background()
 
 	start := time.Now()
