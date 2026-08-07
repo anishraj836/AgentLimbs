@@ -114,6 +114,20 @@ func (cm *DomainCacheManager) FetchAndCache(domain, rawContent string) {
 	cm.expiry[domain] = time.Now().Add(24 * time.Hour)
 }
 
+// HasDomainCached checks if a valid unexpired robots.txt rule is present in cache.
+func (cm *DomainCacheManager) HasDomainCached(targetURL string) bool {
+	reqURL, err := url.Parse(targetURL)
+	if err != nil || reqURL.Hostname() == "" {
+		return true
+	}
+	domain := reqURL.Hostname()
+
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	exp, exists := cm.expiry[domain]
+	return exists && time.Now().Before(exp)
+}
+
 // IsDomainAllowed checks if a target URL path is allowed for a user agent under a cached domain's rules.
 func (cm *DomainCacheManager) IsDomainAllowed(userAgent, targetURL string) (allowed bool, cached bool) {
 	reqURL, err := url.Parse(targetURL)

@@ -109,7 +109,7 @@ func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
 	domain := reqURL.Hostname()
 
 	// Check if already cached
-	if _, cached := robotstxt.GlobalDomainCache.IsDomainAllowed("AntigravityBot", targetURL); cached {
+	if robotstxt.GlobalDomainCache.HasDomainCached(targetURL) {
 		return
 	}
 
