@@ -20,6 +20,8 @@ type HybridSearchHit struct {
 	VectorRank  int     `json:"vector_rank"`
 	Title       string  `json:"title"`
 	URL         string  `json:"url"`
+	SourceType  string  `json:"source_type"`
+	SourceURL   string  `json:"source_url"`
 	Snippet     string  `json:"snippet"`
 }
 

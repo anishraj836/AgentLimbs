@@ -32,8 +32,13 @@ func NewIndexEngine() *IndexEngine {
 	}
 }
 
-// IndexDocument indexes a tokenized document into the Inverted Index, Trie, and PostgreSQL.
+// IndexDocument indexes a tokenized document into the Inverted Index, Trie, and PostgreSQL using default web_crawled source.
 func (e *IndexEngine) IndexDocument(url, title, cleanBody string, termPositions map[string][]int, totalTokens int) {
+	e.IndexDocumentWithSource(url, title, cleanBody, termPositions, totalTokens, "web_crawled", url)
+}
+
+// IndexDocumentWithSource indexes a tokenized document with explicit data lineage (sourceType and sourceURL).
+func (e *IndexEngine) IndexDocumentWithSource(url, title, cleanBody string, termPositions map[string][]int, totalTokens int, sourceType, sourceURL string) {
 	docID := url
 
 	e.mu.Lock()
@@ -50,8 +55,8 @@ func (e *IndexEngine) IndexDocument(url, title, cleanBody string, termPositions 
 		e.Trie.Insert(term, len(positions))
 	}
 
-	// Persist to PostgreSQL shared database
-	_ = db.SaveCrawledDocument(context.Background(), url, title, cleanBody, totalTokens)
+	// Persist to PostgreSQL shared database with Data Lineage
+	_ = db.SaveCrawledDocument(context.Background(), url, title, cleanBody, totalTokens, sourceType, sourceURL)
 }
 
 // LoadFromDB loads all persisted documents from PostgreSQL into the in-memory index on microservice startup.

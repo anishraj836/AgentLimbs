@@ -161,12 +161,14 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 			// Auto-ingest scraped page into Document Processor, Tokenizer, Inverted Index, and Vector Store
 			cleanDoc, _ := processor.ProcessRawHTML(res.FinalURL, htmlBytes)
 			tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
-			indexer.GlobalEngine.IndexDocument(
+			indexer.GlobalEngine.IndexDocumentWithSource(
 				tokenizedDoc.URL,
 				tokenizedDoc.Title,
 				tokenizedDoc.CleanBody,
 				tokenizedDoc.TermPositions,
 				tokenizedDoc.TotalTokens,
+				"api_scraped",
+				res.FinalURL,
 			)
 			embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
 
