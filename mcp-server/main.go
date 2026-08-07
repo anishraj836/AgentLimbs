@@ -2,17 +2,22 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/logger"
 	"github.com/crawler-monorepo/common/mcp"
 	"github.com/crawler-monorepo/crawler-service/httpclient"
+	"github.com/crawler-monorepo/indexer-service/indexer"
 )
 
 func main() {
-	logger.InitLogger("production")
-	defer logger.Sync()
+	db.InitDB(os.Getenv("DATABASE_URL"))
+	if err := indexer.GlobalEngine.LoadFromDB(context.Background()); err != nil {
+		logger.Log.Info("No existing persisted corpus loaded from DB into MCP server memory")
+	}
 
 	client := httpclient.NewClient()
 	scanner := bufio.NewScanner(os.Stdin)
