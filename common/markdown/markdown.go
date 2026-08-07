@@ -90,21 +90,13 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText str
 		case "h4", "h5", "h6":
 			sb.WriteString(fmt.Sprintf("#### %s\n\n", text))
 		case "p":
-			linkText := text
-			s.Find("a[href]").Each(func(j int, a *goquery.Selection) {
-				href, ok := a.Attr("href")
-				anchorText := strings.TrimSpace(a.Text())
-				if ok && anchorText != "" {
-					if parsed, err := url.Parse(href); err == nil && baseURL != nil {
-						abs := baseURL.ResolveReference(parsed).String()
-						linkText = strings.Replace(linkText, anchorText, fmt.Sprintf("[%s](%s)", anchorText, abs), 1)
-					}
-				}
-			})
-			sb.WriteString(fmt.Sprintf("%s\n\n", linkText))
+			formattedText := formatElementText(s, baseURL)
+			if formattedText != "" {
+				sb.WriteString(fmt.Sprintf("%s\n\n", formattedText))
+			}
 		case "ul", "ol":
 			s.Find("li").Each(func(j int, li *goquery.Selection) {
-				itemText := strings.TrimSpace(li.Text())
+				itemText := formatElementText(li, baseURL)
 				if itemText != "" {
 					sb.WriteString(fmt.Sprintf("- %s\n", itemText))
 				}
@@ -121,4 +113,30 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText str
 	tokenEstimate = len(strings.Fields(result))
 
 	return result, tokenEstimate, title
+}
+
+// formatElementText processes links and inline code elements directly within DOM nodes
+func formatElementText(s *goquery.Selection, baseURL *url.URL) string {
+	// Format inline code elements with backticks
+	s.Find("code").Each(func(j int, code *goquery.Selection) {
+		codeText := strings.TrimSpace(code.Text())
+		if codeText != "" {
+			code.SetText("`" + codeText + "`")
+		}
+	})
+
+	// Format links directly in DOM node
+	s.Find("a[href]").Each(func(j int, a *goquery.Selection) {
+		href, ok := a.Attr("href")
+		anchorText := strings.TrimSpace(a.Text())
+		if ok && anchorText != "" {
+			absURL := href
+			if parsed, err := url.Parse(href); err == nil && baseURL != nil {
+				absURL = baseURL.ResolveReference(parsed).String()
+			}
+			a.SetText(fmt.Sprintf("[%s](%s)", anchorText, absURL))
+		}
+	})
+
+	return strings.TrimSpace(s.Text())
 }

@@ -217,8 +217,9 @@ func GenerateHighlightedSnippet(body string, queryTerms []string, maxLen int) st
 		result = result + "..."
 	}
 
-	if len(result) > maxLen {
-		result = result[:maxLen] + "..."
+	runes := []rune(result)
+	if len(runes) > maxLen {
+		result = string(runes[:maxLen]) + "..."
 	}
 
 	return result

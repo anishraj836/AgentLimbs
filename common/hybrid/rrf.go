@@ -30,6 +30,10 @@ func ReciprocalRankFusion(
 	vectorHits []vector.VectorSearchResult,
 	topK int,
 ) []HybridSearchHit {
+	if topK <= 0 {
+		topK = 5
+	}
+
 	bm25Ranks := make(map[string]int)
 	bm25Scores := make(map[string]float64)
 	bm25HitsMap := make(map[string]bm25.SearchHit)
