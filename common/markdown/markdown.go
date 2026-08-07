@@ -150,6 +150,10 @@ func formatElementText(s *goquery.Selection, baseURL *url.URL, mode string) stri
 		href, ok := a.Attr("href")
 		anchorText := strings.TrimSpace(a.Text())
 		if ok && anchorText != "" {
+			// Prevent recursive nested markdown link brackets [[[x](..)](..)]
+			if strings.HasPrefix(anchorText, "[") && strings.Contains(anchorText, "](") {
+				return
+			}
 			// Skip same-page anchor fragment links (e.g. #GOGC) ONLY in clean_rag mode
 			if mode == "clean_rag" && strings.HasPrefix(href, "#") {
 				a.SetText(anchorText)
