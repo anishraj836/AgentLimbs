@@ -23,6 +23,34 @@ func TestCosineSimilarity(t *testing.T) {
 	}
 }
 
+func TestGenerateFeatureVector(t *testing.T) {
+	t.Run("Semantically Related Texts High Similarity", func(t *testing.T) {
+		text1 := "Go concurrency goroutines"
+		text2 := "Go parallel execution goroutines"
+
+		vec1 := GenerateFeatureVector(text1, 128)
+		vec2 := GenerateFeatureVector(text2, 128)
+
+		sim := CosineSimilarity(vec1, vec2)
+		if sim <= 0.50 {
+			t.Errorf("expected high Cosine Similarity (> 0.50) for semantically related texts, got %.4f", sim)
+		}
+	})
+
+	t.Run("Unrelated Texts Low Similarity", func(t *testing.T) {
+		text1 := "Go concurrency"
+		text2 := "baking a chocolate cake recipe"
+
+		vec1 := GenerateFeatureVector(text1, 128)
+		vec2 := GenerateFeatureVector(text2, 128)
+
+		sim := CosineSimilarity(vec1, vec2)
+		if sim >= 0.20 {
+			t.Errorf("expected low Cosine Similarity (< 0.20) for unrelated texts, got %.4f", sim)
+		}
+	})
+}
+
 func TestVectorIndex(t *testing.T) {
 	idx := NewVectorIndex(3)
 

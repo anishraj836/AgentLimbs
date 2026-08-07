@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/crawler-monorepo/common/stopwords"
 )
 
 // VectorSearchResult represents a semantic vector search hit.
@@ -40,29 +42,66 @@ func CosineSimilarity(u, v []float64) float64 {
 	return dotProduct / (math.Sqrt(normU) * math.Sqrt(normV))
 }
 
+// hashFNV1a computes a 64-bit FNV-1a hash value for string s given a seed offset basis.
+func hashFNV1a(s string, seed uint64) uint64 {
+	h := seed
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
 // GenerateFeatureVector produces a deterministic D-dimensional normalized embedding vector
-// from text using a frequency hash projection.
+// from text using subword N-gram (3-gram and 4-gram) feature extraction, full word tokens,
+// basic stopword filtration, dual-hash projection, and L2 normalization.
 func GenerateFeatureVector(text string, dimensions int) []float64 {
 	if dimensions <= 0 {
 		dimensions = 128
 	}
 
 	vec := make([]float64, dimensions)
-	words := strings.Fields(strings.ToLower(text))
-	if len(words) == 0 {
+	rawWords := strings.Fields(strings.ToLower(text))
+	if len(rawWords) == 0 {
 		return vec
 	}
 
-	for _, w := range words {
-		// FNV-1a hash variant for uniform bucket distribution
-		var hash uint64 = 14695981039346656037
-		for i := 0; i < len(w); i++ {
-			hash ^= uint64(w[i])
-			hash *= 1099511628211
+	var features []string
+	for _, raw := range rawWords {
+		w := strings.Trim(raw, ".,!?:;\"'()[]{}<>-")
+		if w == "" || stopwords.IsStopword(w) {
+			continue
 		}
 
-		idx := int(hash % uint64(dimensions))
-		vec[idx] += 1.0
+		// Full word token
+		features = append(features, w)
+
+		// Character 3-grams & 4-grams (e.g. "goroutine" -> "gor", "oru", "rut", "uti", "tin", "ine")
+		runes := []rune(w)
+		n := len(runes)
+		for i := 0; i <= n-3; i++ {
+			features = append(features, string(runes[i:i+3]))
+		}
+		for i := 0; i <= n-4; i++ {
+			features = append(features, string(runes[i:i+4]))
+		}
+	}
+
+	if len(features) == 0 {
+		return vec
+	}
+
+	for _, f := range features {
+		// Dual-hash projection: h1 determines target dimension, h2 determines sign (+1 / -1)
+		h1 := hashFNV1a(f, 14695981039346656037)
+		h2 := hashFNV1a(f, 0xcbf29ce484222325)
+
+		idx := int(h1 % uint64(dimensions))
+		sign := 1.0
+		if (h2 & 1) != 0 {
+			sign = -1.0
+		}
+		vec[idx] += sign
 	}
 
 	// L2 Normalize the vector
