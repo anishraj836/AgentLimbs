@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -13,13 +14,14 @@ import (
 var Pool *pgxpool.Pool
 
 type CrawledDocument struct {
-	ID          int    `json:"id"`
-	URL         string `json:"url"`
-	Title       string `json:"title"`
-	CleanBody   string `json:"clean_body"`
-	TotalTokens int    `json:"total_tokens"`
-	SourceType  string `json:"source_type"`
-	SourceURL   string `json:"source_url"`
+	ID          int        `json:"id"`
+	URL         string     `json:"url"`
+	Title       string     `json:"title"`
+	CleanBody   string     `json:"clean_body"`
+	TotalTokens int        `json:"total_tokens"`
+	SourceType  string     `json:"source_type"`
+	SourceURL   string     `json:"source_url"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
 func InitDB(databaseURL string) {
@@ -47,13 +49,18 @@ func InitTables(ctx context.Context) error {
 		total_tokens INT NOT NULL DEFAULT 0,
 		source_type TEXT NOT NULL DEFAULT 'web_crawled',
 		source_url TEXT,
-		created_at TIMESTAMPTZ DEFAULT NOW()
+		created_at TIMESTAMPTZ DEFAULT NOW(),
+		expires_at TIMESTAMPTZ
 	);`
 	_, err := Pool.Exec(ctx, query)
 	return err
 }
 
 func SaveCrawledDocument(ctx context.Context, url, title, cleanBody string, totalTokens int, sourceType, sourceURL string) error {
+	return SaveCrawledDocumentWithTTL(ctx, url, title, cleanBody, totalTokens, sourceType, sourceURL, 0)
+}
+
+func SaveCrawledDocumentWithTTL(ctx context.Context, url, title, cleanBody string, totalTokens int, sourceType, sourceURL string, ttl time.Duration) error {
 	if sourceType == "" {
 		sourceType = "web_crawled"
 	}
@@ -61,43 +68,67 @@ func SaveCrawledDocument(ctx context.Context, url, title, cleanBody string, tota
 		sourceURL = url
 	}
 
+	var expiresAt *time.Time
+	if ttl > 0 {
+		t := time.Now().Add(ttl)
+		expiresAt = &t
+	}
+
 	if Pool != nil {
 		query := `
-		INSERT INTO crawled_pages (url, title, clean_body, total_tokens, source_type, source_url)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO crawled_pages (url, title, clean_body, total_tokens, source_type, source_url, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (url) DO UPDATE
-		SET title = EXCLUDED.title, clean_body = EXCLUDED.clean_body, total_tokens = EXCLUDED.total_tokens, source_type = EXCLUDED.source_type, source_url = EXCLUDED.source_url;`
-		_, err := Pool.Exec(ctx, query, url, title, cleanBody, totalTokens, sourceType, sourceURL)
+		SET title = EXCLUDED.title, clean_body = EXCLUDED.clean_body, total_tokens = EXCLUDED.total_tokens, source_type = EXCLUDED.source_type, source_url = EXCLUDED.source_url, expires_at = EXCLUDED.expires_at;`
+		_, err := Pool.Exec(ctx, query, url, title, cleanBody, totalTokens, sourceType, sourceURL, expiresAt)
 		if err == nil {
 			return nil
 		}
 	}
 
 	// Fallback to shared file storage
-	return saveToFileFallback(url, title, cleanBody, totalTokens, sourceType, sourceURL)
+	return saveToFileFallback(url, title, cleanBody, totalTokens, sourceType, sourceURL, expiresAt)
 }
 
 func GetCrawledDocuments(ctx context.Context) ([]CrawledDocument, error) {
 	if Pool != nil {
-		query := `SELECT id, url, title, clean_body, total_tokens, COALESCE(source_type, 'web_crawled'), COALESCE(source_url, url) FROM crawled_pages ORDER BY id ASC;`
+		query := `SELECT id, url, title, clean_body, total_tokens, COALESCE(source_type, 'web_crawled'), COALESCE(source_url, url), expires_at FROM crawled_pages WHERE expires_at IS NULL OR expires_at > NOW() ORDER BY id ASC;`
 		rows, err := Pool.Query(ctx, query)
 		if err == nil {
 			defer rows.Close()
 			var docs []CrawledDocument
 			for rows.Next() {
 				var doc CrawledDocument
-				if err := rows.Scan(&doc.ID, &doc.URL, &doc.Title, &doc.CleanBody, &doc.TotalTokens, &doc.SourceType, &doc.SourceURL); err == nil {
+				if err := rows.Scan(&doc.ID, &doc.URL, &doc.Title, &doc.CleanBody, &doc.TotalTokens, &doc.SourceType, &doc.SourceURL, &doc.ExpiresAt); err == nil {
 					docs = append(docs, doc)
 				}
 			}
-			if len(docs) > 0 {
-				return docs, nil
-			}
+			return docs, nil
 		}
 	}
 
 	// Fallback to shared file storage
 	return getFromFileFallback()
+}
+
+func DeleteExpiredDocuments(ctx context.Context) (int64, error) {
+	var totalDeleted int64
+	if Pool != nil {
+		query := `DELETE FROM crawled_pages WHERE expires_at IS NOT NULL AND expires_at <= NOW();`
+		cmdTag, err := Pool.Exec(ctx, query)
+		if err != nil {
+			return 0, err
+		}
+		totalDeleted += cmdTag.RowsAffected()
+	}
+
+	fileDeleted, err := deleteExpiredFromFileFallback()
+	if err != nil {
+		return totalDeleted, err
+	}
+	totalDeleted += fileDeleted
+
+	return totalDeleted, nil
 }
 
 var fallbackMu sync.Mutex
@@ -108,7 +139,7 @@ func getStoragePath() string {
 	return filepath.Join(dir, "crawled_pages.json")
 }
 
-func saveToFileFallback(url, title, cleanBody string, totalTokens int, sourceType, sourceURL string) error {
+func saveToFileFallback(url, title, cleanBody string, totalTokens int, sourceType, sourceURL string, expiresAt *time.Time) error {
 	fallbackMu.Lock()
 	defer fallbackMu.Unlock()
 
@@ -127,6 +158,7 @@ func saveToFileFallback(url, title, cleanBody string, totalTokens int, sourceTyp
 			docs[i].TotalTokens = totalTokens
 			docs[i].SourceType = sourceType
 			docs[i].SourceURL = sourceURL
+			docs[i].ExpiresAt = expiresAt
 			found = true
 			break
 		}
@@ -142,6 +174,7 @@ func saveToFileFallback(url, title, cleanBody string, totalTokens int, sourceTyp
 			TotalTokens: totalTokens,
 			SourceType:  sourceType,
 			SourceURL:   sourceURL,
+			ExpiresAt:   expiresAt,
 		})
 	}
 
@@ -168,7 +201,59 @@ func getFromFileFallback() ([]CrawledDocument, error) {
 		return nil, err
 	}
 
-	return docs, nil
+	now := time.Now()
+	var validDocs []CrawledDocument
+	for _, d := range docs {
+		if d.ExpiresAt != nil && !d.ExpiresAt.IsZero() && d.ExpiresAt.Before(now) {
+			continue
+		}
+		validDocs = append(validDocs, d)
+	}
+
+	return validDocs, nil
+}
+
+func deleteExpiredFromFileFallback() (int64, error) {
+	fallbackMu.Lock()
+	defer fallbackMu.Unlock()
+
+	filePath := getStoragePath()
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	var docs []CrawledDocument
+	if err := json.Unmarshal(data, &docs); err != nil {
+		return 0, err
+	}
+
+	now := time.Now()
+	var validDocs []CrawledDocument
+	var deletedCount int64
+
+	for _, d := range docs {
+		if d.ExpiresAt != nil && !d.ExpiresAt.IsZero() && !d.ExpiresAt.After(now) {
+			deletedCount++
+		} else {
+			validDocs = append(validDocs, d)
+		}
+	}
+
+	if deletedCount > 0 {
+		newData, err := json.MarshalIndent(validDocs, "", "  ")
+		if err != nil {
+			return 0, err
+		}
+		if err := os.WriteFile(filePath, newData, 0644); err != nil {
+			return 0, err
+		}
+	}
+
+	return deletedCount, nil
 }
 
 func CloseDB() {
@@ -176,3 +261,4 @@ func CloseDB() {
 		Pool.Close()
 	}
 }
+

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agent-limbs": {
+      "command": "/Users/anishraj/Desktop/Placement_Projects/crawler-monorepo/mcp-server/agent-limbs-mcp",
+      "args": [],
+      "env": {
+        "AGENT_API_KEY": "agentlimbs_sec_key_v2_9a8b7c6d5e4f3210"
+      }
+    }
+  }
+}

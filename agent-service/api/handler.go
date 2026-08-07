@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/crawler-monorepo/common/bm25"
+	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/extractor"
 	"github.com/crawler-monorepo/common/hybrid"
 	"github.com/crawler-monorepo/common/markdown"
@@ -186,14 +187,15 @@ func NewAgentHandler() *AgentHandler {
 }
 
 type ScrapeRequest struct {
-	URL string `json:"url"`
+	URL        string `json:"url"`
+	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 }
 
 type ScrapeResponse struct {
-	URL           string `json:"url"`
-	Title         string `json:"title"`
-	Markdown      string `json:"markdown"`
-	TokenEstimate int    `json:"token_estimate"`
+	URL           string  `json:"url"`
+	Title         string  `json:"title"`
+	Markdown      string  `json:"markdown"`
+	TokenEstimate int     `json:"token_estimate"`
 	LatencyMs     float64 `json:"latency_ms"`
 }
 
@@ -208,6 +210,9 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		req.URL = r.URL.Query().Get("url")
+		if ttlStr := r.URL.Query().Get("ttl_seconds"); ttlStr != "" {
+			req.TTLSeconds, _ = strconv.Atoi(ttlStr)
+		}
 	}
 
 	if req.URL == "" {
@@ -250,6 +255,18 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 		tokenizedDoc.TermPositions,
 		tokenizedDoc.TotalTokens,
 	)
+	if req.TTLSeconds > 0 {
+		_ = db.SaveCrawledDocumentWithTTL(
+			r.Context(),
+			tokenizedDoc.URL,
+			tokenizedDoc.Title,
+			tokenizedDoc.CleanBody,
+			tokenizedDoc.TotalTokens,
+			"web_crawled",
+			tokenizedDoc.URL,
+			time.Duration(req.TTLSeconds)*time.Second,
+		)
+	}
 	embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0

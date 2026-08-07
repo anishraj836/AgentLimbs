@@ -64,9 +64,17 @@ func (e *IndexEngine) IndexDocumentWithSource(url, title, cleanBody string, term
 // LoadFromDB loads all persisted documents from PostgreSQL into the in-memory index on microservice startup.
 func (e *IndexEngine) LoadFromDB(ctx context.Context) error {
 	docs, err := db.GetCrawledDocuments(ctx)
-	if err != nil || len(docs) == 0 {
+	if err != nil {
 		return err
 	}
+
+	e.mu.Lock()
+	e.DocTitles = make(map[string]string)
+	e.DocURLs = make(map[string]string)
+	e.DocBodies = make(map[string]string)
+	e.Inverted = index.NewInvertedIndex()
+	e.Trie = trie.NewTrie()
+	e.mu.Unlock()
 
 	for _, d := range docs {
 		// Tokenize clean body and index
@@ -84,6 +92,24 @@ func (e *IndexEngine) LoadFromDB(ctx context.Context) error {
 		embedder.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
 	}
 	return nil
+}
+
+// StartTTLJanitor runs a background goroutine that periodically calls db.DeleteExpiredDocuments
+// and reloads fresh valid documents into memory via LoadFromDB.
+func (e *IndexEngine) StartTTLJanitor(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				_, _ = db.DeleteExpiredDocuments(ctx)
+				_ = e.LoadFromDB(ctx)
+			}
+		}
+	}()
 }
 
 // StartPeriodicDBHydrator runs a background goroutine that periodically polls PostgreSQL
