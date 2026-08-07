@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/crawler-monorepo/common/bm25"
@@ -20,6 +22,68 @@ import (
 	"github.com/crawler-monorepo/indexer-service/indexer"
 	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
+
+type RateLimiter struct {
+	mu        sync.Mutex
+	requests  map[string]int
+	lastReset time.Time
+	maxReqs   int
+}
+
+func NewRateLimiter(maxReqsPerMin int) *RateLimiter {
+	return &RateLimiter{
+		requests:  make(map[string]int),
+		lastReset: time.Now(),
+		maxReqs:   maxReqsPerMin,
+	}
+}
+
+func (rl *RateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	if time.Since(rl.lastReset) > time.Minute {
+		rl.requests = make(map[string]int)
+		rl.lastReset = time.Now()
+	}
+
+	if rl.requests[ip] >= rl.maxReqs {
+		return false
+	}
+	rl.requests[ip]++
+	return true
+}
+
+func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				ip = r.RemoteAddr
+			}
+
+			// Rate limiting check
+			if !limiter.Allow(ip) {
+				http.Error(w, `{"error":"Rate limit exceeded. Please try again later."}`, http.StatusTooManyRequests)
+				return
+			}
+
+			// API Key auth check in cloud mode or when key is set
+			if mode == "cloud" || apiKey != "" {
+				clientKey := r.Header.Get("X-API-Key")
+				if clientKey == "" {
+					clientKey = r.URL.Query().Get("api_key")
+				}
+				if apiKey != "" && clientKey != apiKey {
+					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header"}`, http.StatusUnauthorized)
+					return
+				}
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 type AgentHandler struct {
 	httpClient *httpclient.Client
