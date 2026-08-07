@@ -190,6 +190,18 @@ func NewClient() *Client {
 	return c
 }
 
+// SetAllowLoopbackForTesting sets whether private/loopback IP connections are allowed for unit tests.
+func (c *Client) SetAllowLoopbackForTesting(allow bool) {
+	c.allowLoopbackForTesting = allow
+}
+
+// SetTransport sets a custom http.RoundTripper for testing.
+func (c *Client) SetTransport(tr http.RoundTripper) {
+	if c.client != nil {
+		c.client.Transport = tr
+	}
+}
+
 // FetchResult wraps the HTTP response along with the final URL after redirects.
 type FetchResult struct {
 	Response *http.Response

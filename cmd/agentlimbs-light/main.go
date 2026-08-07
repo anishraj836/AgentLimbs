@@ -1,0 +1,344 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/crawler-monorepo/agent-service/api"
+	"github.com/crawler-monorepo/common/bm25"
+	"github.com/crawler-monorepo/common/db"
+	"github.com/crawler-monorepo/common/hybrid"
+	"github.com/crawler-monorepo/common/logger"
+	"github.com/crawler-monorepo/common/markdown"
+	"github.com/crawler-monorepo/common/utils"
+	"github.com/crawler-monorepo/common/vector"
+	"github.com/crawler-monorepo/crawler-service/httpclient"
+	"github.com/crawler-monorepo/document-processor/processor"
+	"github.com/crawler-monorepo/embedding-service/embedder"
+	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
+)
+
+type EmbeddedServer struct {
+	httpClient *httpclient.Client
+	dataDir    string
+}
+
+func NewEmbeddedServer(dataDir string) *EmbeddedServer {
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	return &EmbeddedServer{
+		httpClient: httpclient.NewClient(),
+		dataDir:    dataDir,
+	}
+}
+
+func (s *EmbeddedServer) HTTPClient() *httpclient.Client {
+	return s.httpClient
+}
+
+func (s *EmbeddedServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok","mode":"single_binary_embedded"}`))
+}
+
+type ScrapeRequest struct {
+	URL        string `json:"url"`
+	Mode       string `json:"mode,omitempty"`
+	TTLSeconds int    `json:"ttl_seconds,omitempty"`
+}
+
+type ScrapeResponse struct {
+	URL           string  `json:"url"`
+	Title         string  `json:"title"`
+	Markdown      string  `json:"markdown"`
+	TokenEstimate int     `json:"token_estimate"`
+	LatencyMs     float64 `json:"latency_ms"`
+}
+
+func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
+	var req ScrapeRequest
+
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"Invalid JSON body"}`, http.StatusBadRequest)
+			return
+		}
+	} else {
+		req.URL = r.URL.Query().Get("url")
+		req.Mode = r.URL.Query().Get("mode")
+		if ttlStr := r.URL.Query().Get("ttl_seconds"); ttlStr != "" {
+			req.TTLSeconds, _ = strconv.Atoi(ttlStr)
+		}
+	}
+
+	if req.URL == "" {
+		http.Error(w, `{"error":"URL parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	normURL, err := utils.NormalizeURL(req.URL)
+	if err != nil {
+		http.Error(w, `{"error":"Invalid URL format"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	fetchURL := utils.TransformGitHubURL(normURL)
+	res, err := s.httpClient.Fetch(ctx, fetchURL)
+	if err != nil {
+		http.Error(w, `{"error":"Failed to fetch URL: `+err.Error()+`"}`, http.StatusBadGateway)
+		return
+	}
+	defer res.Response.Body.Close()
+
+	limitedBody := io.LimitReader(res.Response.Body, 10*1024*1024)
+	htmlBytes, err := io.ReadAll(limitedBody)
+	if err != nil {
+		http.Error(w, `{"error":"Failed to read response body"}`, http.StatusInternalServerError)
+		return
+	}
+
+	mdText, tokens, title := markdown.ConvertHTMLToMarkdownWithMode(res.FinalURL, htmlBytes, req.Mode)
+
+	// Auto-ingest scraped page into Document Processor, Tokenizer, Inverted Index, and Vector Store
+	cleanDoc, _ := processor.ProcessRawHTML(res.FinalURL, htmlBytes)
+	tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+	indexer.GlobalEngine.IndexDocumentWithSource(
+		tokenizedDoc.URL,
+		tokenizedDoc.Title,
+		tokenizedDoc.CleanBody,
+		tokenizedDoc.TermPositions,
+		tokenizedDoc.TotalTokens,
+		"embedded_scraped",
+		res.FinalURL,
+	)
+
+	embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+
+	if ttlDuration, hasTTL := api.ClampTTL(req.TTLSeconds); hasTTL {
+		_ = db.SaveCrawledDocumentWithTTL(
+			r.Context(),
+			tokenizedDoc.URL,
+			tokenizedDoc.Title,
+			tokenizedDoc.CleanBody,
+			tokenizedDoc.TotalTokens,
+			"embedded_scraped",
+			res.FinalURL,
+			ttlDuration,
+		)
+	} else {
+		_ = db.SaveCrawledDocument(
+			r.Context(),
+			tokenizedDoc.URL,
+			tokenizedDoc.Title,
+			tokenizedDoc.CleanBody,
+			tokenizedDoc.TotalTokens,
+			"embedded_scraped",
+			res.FinalURL,
+		)
+	}
+
+	// Persist to file fallback snapshots
+	saveStorage(s.dataDir)
+
+	latency := float64(time.Since(t0).Microseconds()) / 1000.0
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(ScrapeResponse{
+		URL:           res.FinalURL,
+		Title:         title,
+		Markdown:      mdText,
+		TokenEstimate: tokens,
+		LatencyMs:     latency,
+	})
+}
+
+type SearchRequest struct {
+	Query string `json:"query"`
+	TopK  int    `json:"top_k"`
+}
+
+type SearchResponse struct {
+	Query     string                  `json:"query"`
+	LatencyMs float64                 `json:"latency_ms"`
+	TotalHits int                     `json:"total_hits"`
+	Results   []hybrid.HybridSearchHit `json:"results"`
+}
+
+func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
+	var req SearchRequest
+
+	if r.Method == http.MethodPost {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	} else {
+		req.Query = r.URL.Query().Get("q")
+		if req.Query == "" {
+			req.Query = r.URL.Query().Get("query")
+		}
+		req.TopK, _ = strconv.Atoi(r.URL.Query().Get("top_k"))
+	}
+
+	if req.TopK <= 0 {
+		req.TopK = 5
+	}
+
+	// 1. Sparse BM25 Keyword Search
+	titles, urls, bodies := indexer.GlobalEngine.GetMetadataMaps()
+	bm25Hits := bm25.RankDocuments(
+		req.Query,
+		indexer.GlobalEngine.Inverted,
+		titles,
+		urls,
+		bodies,
+		req.TopK*2,
+	)
+
+	// 2. Dense Vector Semantic Search
+	queryVec := vector.GenerateFeatureVector(req.Query, 128)
+	vecHits := embedder.GlobalVectorIndex.SearchNearest(queryVec, req.TopK*2)
+
+	// 3. Reciprocal Rank Fusion (RRF)
+	fusedHits := hybrid.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
+
+	latency := float64(time.Since(t0).Microseconds()) / 1000.0
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(SearchResponse{
+		Query:     req.Query,
+		LatencyMs: latency,
+		TotalHits: len(fusedHits),
+		Results:   fusedHits,
+	})
+}
+
+func (s *EmbeddedServer) SetupRouter() http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
+	r.Get("/health", s.HealthHandler)
+	r.Post("/v1/scrape", s.ScrapeHandler)
+	r.Get("/v1/scrape", s.ScrapeHandler)
+	r.Post("/v1/search", s.SearchHandler)
+	r.Get("/v1/search", s.SearchHandler)
+
+	return r
+}
+
+func initStorage(dataDir string) {
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	_ = os.MkdirAll(dataDir, 0755)
+
+	indexPath := filepath.Join(dataDir, "inverted_index.json")
+	if _, err := os.Stat(indexPath); err == nil {
+		if err := indexer.GlobalEngine.Inverted.LoadSnapshot(indexPath); err == nil {
+			logger.Log.Info("Loaded inverted index snapshot from file fallback: " + indexPath)
+		}
+	}
+
+	vectorPath := filepath.Join(dataDir, "vector_index.json")
+	if _, err := os.Stat(vectorPath); err == nil {
+		if err := embedder.GlobalVectorIndex.LoadSnapshot(vectorPath); err == nil {
+			logger.Log.Info("Loaded vector index snapshot from file fallback: " + vectorPath)
+		}
+	}
+
+	// Load fallback documents if stored in crawled_pages.json
+	docs, err := db.GetCrawledDocuments(context.Background())
+	if err == nil && len(docs) > 0 {
+		for _, d := range docs {
+			tokDoc := tokenizer.TokenizePipeline(d.URL, d.Title, d.CleanBody)
+			indexer.GlobalEngine.IndexDocumentWithSource(
+				tokDoc.URL,
+				tokDoc.Title,
+				tokDoc.CleanBody,
+				tokDoc.TermPositions,
+				tokDoc.TotalTokens,
+				d.SourceType,
+				d.SourceURL,
+			)
+			embedder.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
+		}
+		logger.Log.Info(fmt.Sprintf("Hydrated %d documents into memory from file fallback", len(docs)))
+	}
+}
+
+func saveStorage(dataDir string) {
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	_ = os.MkdirAll(dataDir, 0755)
+
+	indexPath := filepath.Join(dataDir, "inverted_index.json")
+	_ = indexer.GlobalEngine.Inverted.SaveSnapshot(indexPath)
+
+	vectorPath := filepath.Join(dataDir, "vector_index.json")
+	_ = embedder.GlobalVectorIndex.SaveSnapshot(vectorPath)
+}
+
+func main() {
+	logger.InitLogger(os.Getenv("ENV"))
+	defer logger.Sync()
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
+
+	initStorage(dataDir)
+
+	server := NewEmbeddedServer(dataDir)
+	router := server.SetupRouter()
+
+	httpServer := &http.Server{
+		Addr:    ":" + port,
+		Handler: router,
+	}
+
+	logger.Log.Info("AgentLimbs Light Single-Binary Server starting on port " + port)
+
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Log.Fatal("Server error", zap.Error(err))
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+
+	logger.Log.Info("Shutting down server gracefully...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		logger.Log.Error("Server forced to shutdown", zap.Error(err))
+	}
+}
