@@ -107,6 +107,23 @@ curl -X POST http://localhost:8080/api/v1/seeds \
 
 ---
 
+### 5. Connecting to Cloud Databases (Supabase / Neon.tech / AWS RDS)
+AgentLimbs adheres to 12-Factor App design principles. To switch from local Docker PostgreSQL/Redis to cloud databases, simply export environment variables:
+
+```bash
+# 1. Connect to Supabase or Neon.tech PostgreSQL
+export DATABASE_URL="postgres://postgres.xxxx:password@db.xxxx.supabase.co:5432/postgres?sslmode=require"
+
+# 2. Connect to Upstash Redis / Managed Cloud Redis
+export REDIS_ADDR="redis-xxxx.upstash.io:6379"
+export REDIS_PASSWORD="your_upstash_password"
+
+# 3. Run Agent Service connected to Cloud Infrastructure
+go run agent-service/main.go
+```
+
+---
+
 ## 🚀 System Pipeline & Microservices Architecture
 
 ```text
