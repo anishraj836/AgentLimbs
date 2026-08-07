@@ -3,6 +3,8 @@ package httpclient
 import (
 	"net"
 	"testing"
+
+	"github.com/crawler-monorepo/common/robotstxt"
 )
 
 func TestPrivateIPGuard(t *testing.T) {
@@ -32,5 +34,23 @@ func TestPrivateIPGuard(t *testing.T) {
 		if isPrivateIP(ip) {
 			t.Errorf("expected isPrivateIP(%s) to be false, got true", ipStr)
 		}
+	}
+}
+
+func TestRobotsTxtNetworkFetchAndDisallow(t *testing.T) {
+	domain := "example.com"
+	rawRobots := "User-agent: *\nDisallow: /private/\n"
+
+	// 1. Fetch & Cache robots.txt for domain
+	robotstxt.GlobalDomainCache.FetchAndCache(domain, rawRobots)
+
+	// 2. Test public URL -> Should be ALLOWED
+	if !robotstxt.IsAllowed("AntigravityBot", "https://example.com/public/data") {
+		t.Fatalf("expected public URL to be allowed by robots.txt")
+	}
+
+	// 3. Test private URL -> Should be DISALLOWED
+	if robotstxt.IsAllowed("AntigravityBot", "https://example.com/private/data") {
+		t.Fatalf("expected private URL to be disallowed by robots.txt")
 	}
 }
