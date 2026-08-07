@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,8 +70,53 @@ func parseIP(s string) string {
 	return ""
 }
 
-// GetClientIP extracts client IP address checking X-Forwarded-For and X-Real-IP headers safely, falling back to r.RemoteAddr.
+func isTrustedProxy(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+
+	// 1. Loopback IPs (127.0.0.1, ::1) are trusted proxies by default
+	if ip.IsLoopback() {
+		return true
+	}
+
+	// 2. Custom TRUSTED_PROXIES env var (comma-separated IPs/CIDRs)
+	if envProxies := os.Getenv("TRUSTED_PROXIES"); envProxies != "" {
+		for _, raw := range strings.Split(envProxies, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if _, cidr, err := net.ParseCIDR(raw); err == nil {
+				if cidr.Contains(ip) {
+					return true
+				}
+			} else if parsed := net.ParseIP(raw); parsed != nil {
+				if parsed.Equal(ip) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// GetClientIP extracts client IP address checking X-Forwarded-For and X-Real-IP headers ONLY if r.RemoteAddr is a trusted proxy.
+// If r.RemoteAddr is an untrusted remote client, proxy headers are ignored to prevent rate limiter bypass via header spoofing.
 func GetClientIP(r *http.Request) string {
+	remoteIP := parseIP(r.RemoteAddr)
+
+	// Direct remote IP is untrusted -> do NOT trust client-supplied headers!
+	if !isTrustedProxy(remoteIP) {
+		if remoteIP != "" {
+			return remoteIP
+		}
+		return r.RemoteAddr
+	}
+
+	// Remote connection comes from a trusted proxy -> inspect headers safely
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		for _, part := range strings.Split(xff, ",") {
 			if ip := parseIP(part); ip != "" {
@@ -85,10 +131,9 @@ func GetClientIP(r *http.Request) string {
 		}
 	}
 
-	if ip := parseIP(r.RemoteAddr); ip != "" {
-		return ip
+	if remoteIP != "" {
+		return remoteIP
 	}
-
 	return r.RemoteAddr
 }
 
