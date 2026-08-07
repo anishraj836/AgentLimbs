@@ -26,6 +26,29 @@ import (
 	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
+// ClampTTL validates and clamps LLM-supplied or API-supplied TTL seconds within safe boundaries.
+// - llmTTL == 0: Permanent (no expiration)
+// - llmTTL < 0: Default 7-day TTL fallback
+// - llmTTL > 0: Clamped between 5 minutes (300s) and 30 days (2592000s)
+func ClampTTL(llmTTL int) (time.Duration, bool) {
+	if llmTTL == 0 {
+		return 0, false // Permanent document (no expiration)
+	}
+	if llmTTL < 0 {
+		return 7 * 24 * time.Hour, true // Default 7-day TTL
+	}
+
+	// Clamp between 5 minutes and 30 days
+	if llmTTL < 300 {
+		return 300 * time.Second, true
+	}
+	if llmTTL > 30*86400 {
+		return 30 * 24 * time.Hour, true
+	}
+
+	return time.Duration(llmTTL) * time.Second, true
+}
+
 type RateLimiter struct {
 	mu        sync.Mutex
 	requests  map[string]int
@@ -255,7 +278,8 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 		tokenizedDoc.TermPositions,
 		tokenizedDoc.TotalTokens,
 	)
-	if req.TTLSeconds > 0 {
+
+	if ttlDuration, hasTTL := ClampTTL(req.TTLSeconds); hasTTL {
 		_ = db.SaveCrawledDocumentWithTTL(
 			r.Context(),
 			tokenizedDoc.URL,
@@ -264,7 +288,7 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 			tokenizedDoc.TotalTokens,
 			"web_crawled",
 			tokenizedDoc.URL,
-			time.Duration(req.TTLSeconds)*time.Second,
+			ttlDuration,
 		)
 	}
 	embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/crawler-monorepo/agent-service/api"
 	"github.com/crawler-monorepo/common/bm25"
+	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/hybrid"
 	"github.com/crawler-monorepo/common/markdown"
 	"github.com/crawler-monorepo/common/utils"
@@ -90,6 +92,10 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 								"type":        "string",
 								"description": "Extraction mode: 'clean_rag' (default, max token savings), 'preserve_links' (keep all URLs), or 'raw' (minimal filtering)",
 							},
+							"ttl_seconds": map[string]interface{}{
+								"type":        "integer",
+								"description": "Optional Time-To-Live in seconds (0 = permanent, 3600 = 1 hr for news, 86400 = 24 hrs for blogs/posts). Clamped safely between 5 mins and 30 days.",
+							},
 						},
 						"required": []string{"url"},
 					},
@@ -170,6 +176,34 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 				"api_scraped",
 				res.FinalURL,
 			)
+
+			ttlSecs := 0
+			if ttlVal, ok := callParams.Arguments["ttl_seconds"].(float64); ok {
+				ttlSecs = int(ttlVal)
+			}
+
+			if ttlDuration, hasTTL := api.ClampTTL(ttlSecs); hasTTL {
+				_ = db.SaveCrawledDocumentWithTTL(
+					ctx,
+					tokenizedDoc.URL,
+					tokenizedDoc.Title,
+					tokenizedDoc.CleanBody,
+					tokenizedDoc.TotalTokens,
+					"api_scraped",
+					res.FinalURL,
+					ttlDuration,
+				)
+			} else {
+				_ = db.SaveCrawledDocument(
+					ctx,
+					tokenizedDoc.URL,
+					tokenizedDoc.Title,
+					tokenizedDoc.CleanBody,
+					tokenizedDoc.TotalTokens,
+					"api_scraped",
+					res.FinalURL,
+				)
+			}
 			embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
 
 			outText := fmt.Sprintf("# Title: %s\n# URL: %s\n# Tokens: %d\n\n%s", title, res.FinalURL, tokens, mdText)
