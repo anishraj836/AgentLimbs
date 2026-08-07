@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 type RobotsGroup struct {
@@ -96,9 +98,10 @@ func (rd *RobotsData) IsAllowed(userAgent, targetURL string) bool {
 }
 
 type DomainCacheManager struct {
-	mu     sync.RWMutex
-	cache  map[string]*RobotsData
-	expiry map[string]time.Time
+	mu      sync.RWMutex
+	cache   map[string]*RobotsData
+	expiry  map[string]time.Time
+	sfGroup singleflight.Group
 }
 
 var GlobalDomainCache = &DomainCacheManager{
@@ -107,12 +110,59 @@ var GlobalDomainCache = &DomainCacheManager{
 }
 
 // FetchAndCache parses and stores a domain's robots.txt rules with a 24-hour TTL cache.
-// TODO: Optionally add singleflight.Group to coalesce concurrent fetches for an uncached domain.
 func (cm *DomainCacheManager) FetchAndCache(domain, rawContent string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.cache[domain] = ParseRobotsTxt(rawContent)
 	cm.expiry[domain] = time.Now().Add(24 * time.Hour)
+}
+
+// EnsureRobotsCached fetches and caches robots.txt for a domain if not already cached/valid,
+// using singleflight.Group to coalesce concurrent requests for the same uncached domain.
+func (cm *DomainCacheManager) EnsureRobotsCached(domain string, fetchFunc func(domain string) (string, error)) (*RobotsData, error) {
+	cm.mu.RLock()
+	data, exists := cm.cache[domain]
+	exp, _ := cm.expiry[domain]
+	cm.mu.RUnlock()
+
+	if exists && time.Now().Before(exp) {
+		return data, nil
+	}
+
+	val, err, _ := cm.sfGroup.Do(domain, func() (interface{}, error) {
+		cm.mu.RLock()
+		data, exists := cm.cache[domain]
+		exp, _ := cm.expiry[domain]
+		cm.mu.RUnlock()
+
+		if exists && time.Now().Before(exp) {
+			return data, nil
+		}
+
+		rawContent, err := fetchFunc(domain)
+		if err != nil {
+			return nil, err
+		}
+
+		cm.FetchAndCache(domain, rawContent)
+
+		cm.mu.RLock()
+		data = cm.cache[domain]
+		cm.mu.RUnlock()
+
+		return data, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return val.(*RobotsData), nil
+}
+
+// EnsureRobotsCached is a package-level helper that ensures robots.txt is cached for a domain.
+func EnsureRobotsCached(domain string, fetchFunc func(domain string) (string, error)) (*RobotsData, error) {
+	return GlobalDomainCache.EnsureRobotsCached(domain, fetchFunc)
 }
 
 // HasDomainCached checks if a valid unexpired robots.txt rule is present in cache.
@@ -145,7 +195,7 @@ func (cm *DomainCacheManager) IsDomainAllowed(userAgent, targetURL string) (allo
 	exp, _ := cm.expiry[domain]
 	cm.mu.RUnlock()
 
-	if !exists || time.Now().After(exp) {
+	if !exists || time.Now().Before(exp) == false {
 		return true, false // Uncached or expired
 	}
 	return data.IsAllowed(userAgent, targetURL), true

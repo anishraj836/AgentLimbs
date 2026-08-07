@@ -1,7 +1,10 @@
 package robotstxt
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestRobotsTxtCompliance(t *testing.T) {
@@ -53,5 +56,47 @@ func TestEndToEndRobotsDomainCaching(t *testing.T) {
 	// 4. Assert disallowed admin path URL
 	if IsAllowed("AntigravityBot", "https://testdomain.org/admin/dashboard") {
 		t.Fatalf("expected /admin/dashboard to be disallowed by robots.txt")
+	}
+}
+
+func TestRobotsTxtCacheStampede(t *testing.T) {
+	var fetchCount int32
+	domain := "stampede-domain.com"
+	robotsContent := `
+		User-agent: *
+		Disallow: /secret
+	`
+
+	fetchFunc := func(dom string) (string, error) {
+		atomic.AddInt32(&fetchCount, 1)
+		// Introduce brief sleep to ensure concurrent goroutines hit singleflight simultaneously
+		time.Sleep(50 * time.Millisecond)
+		return robotsContent, nil
+	}
+
+	const numGoroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := EnsureRobotsCached(domain, fetchFunc)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	count := atomic.LoadInt32(&fetchCount)
+	if count != 1 {
+		t.Fatalf("expected fetchFunc to be called EXACTLY ONCE (counter == 1), got %d", count)
+	}
+
+	// Verify that domain is cached properly
+	if IsAllowed("AntigravityBot", "https://stampede-domain.com/secret") {
+		t.Errorf("expected /secret to be disallowed after caching")
 	}
 }

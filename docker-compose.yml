@@ -112,7 +112,8 @@ services:
       - "8090:8090"
     environment:
       EXECUTION_MODE: "local"
-      AGENT_API_KEY: "REDACTED_SECRET"
+      # Note: Any exposed API keys must be rotated.
+      AGENT_API_KEY: ${AGENT_API_KEY:?AGENT_API_KEY is required}
       DATABASE_URL: "postgres://crawler:crawler_password@postgres:5432/crawler_db?sslmode=disable"
     depends_on:
       - postgres

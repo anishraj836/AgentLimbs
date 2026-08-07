@@ -93,7 +93,7 @@ curl -X POST http://localhost:8090/v1/agent/query \
 ---
 
 ### 4. Distributed Production Stack (Docker Compose & Cloud)
-Run the full 6-microservice event-driven crawling pipeline backed by Kafka and Redis:
+Run the full 9-microservice event-driven crawling pipeline backed by Kafka and Redis (`agent-service`, `crawler-service`, `document-processor`, `embedding-service`, `frontier-service`, `indexer-service`, `mcp-server`, `parser-service`, `search-service`):
 
 ```bash
 # Launch full Kafka, Redis, Postgres & Microservices stack
@@ -206,8 +206,8 @@ go run agent-service/main.go
 - **Okapi BM25 Ranker**: From-scratch mathematical implementation of Okapi BM25 ($k_1=1.2, b=0.75$) with Inverse Document Frequency (IDF) scoring and contextual `<mark>` highlighted text snippets.
 
 ### Phase 3 — The Agentic Phase (AI Agents & Hybrid RAG Engine)
-- **Firecrawl-Style Scrape API (`POST /v1/scrape`)**: Converts HTML DOM trees into clean, Token-Efficient Github-Flavored Markdown (`# Headings`, `**Bold**`, `[Link](url)`), reducing LLM token consumption by **up to 5.6x (82%+ token reduction)** verified via Tiktoken `cl100k_base` and `o200k_base`.
-- **AI Vector Embedding Engine**: Generates $D=128$ normalized feature vectors and computes **Cosine Similarity** math:
+- **Firecrawl-Style Scrape API (`POST /v1/scrape`)**: Converts HTML DOM trees into clean, Token-Efficient Github-Flavored Markdown (`# Headings`, `**Bold**`, `[Link](url)`), reducing LLM token consumption by **up to 5.6x (82%+ token reduction)** on verified test benchmark fixtures (e.g., HTML documentation pages tested via Tiktoken `cl100k_base` and `o200k_base`); note that actual token reduction is fixture-dependent.
+- **AI Vector Embedding Engine**: Generates $D=128$ normalized feature vectors via FNV hash-bucket bag-of-words encoding (rather than a deep neural embedding model) and computes **Cosine Similarity** math:
   $$\text{CosineSimilarity}(\vec{u}, \vec{v}) = \frac{\vec{u} \cdot \vec{v}}{\|\vec{u}\| \|\vec{v}\|}$$
 - **Hybrid Search Engine via Reciprocal Rank Fusion (RRF)**: Merges sparse BM25 keyword search rankings with dense vector semantic rankings:
   $$\text{RRF\_Score}(d) = \frac{1}{k + \text{rank}_{\text{BM25}}(d)} + \frac{1}{k + \text{rank}_{\text{Vector}}(d)}$$
