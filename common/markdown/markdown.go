@@ -9,16 +9,31 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-// ConvertHTMLToMarkdown converts raw HTML into token-efficient, LLM-ready Github-Flavored Markdown.
-// Includes AST table rendering (<table> -> Markdown table), inline formatting, headings, and links.
+// ConvertHTMLToMarkdown converts raw HTML into token-efficient Github-Flavored Markdown using clean_rag mode.
 func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText string, tokenEstimate int, title string) {
+	return ConvertHTMLToMarkdownWithMode(sourceURL, htmlBytes, "clean_rag")
+}
+
+// ConvertHTMLToMarkdownWithMode supports custom extraction modes:
+// - "clean_rag" (default): Strips sidebars/TOC and same-page anchor URLs for max token reduction.
+// - "preserve_links": Preserves all full URL links (including fragment links).
+// - "raw": Minimal filtering; preserves original DOM structure.
+func ConvertHTMLToMarkdownWithMode(sourceURL string, htmlBytes []byte, mode string) (markdownText string, tokenEstimate int, title string) {
+	if mode == "" {
+		mode = "clean_rag"
+	}
+
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(htmlBytes))
 	if err != nil {
 		return string(htmlBytes), len(strings.Fields(string(htmlBytes))), sourceURL
 	}
 
-	// Remove non-content elements and navigational sidebars
-	doc.Find("script, style, noscript, iframe, nav, footer, header, form, svg, aside, .toc, .table-of-contents, .breadcrumb, .sidebar, .menu, .ad, .advertisement").Remove()
+	// Remove non-content elements and navigational sidebars in clean_rag and preserve_links modes
+	if mode != "raw" {
+		doc.Find("script, style, noscript, iframe, nav, footer, header, form, svg, aside, .toc, .table-of-contents, .breadcrumb, .sidebar, .menu, .ad, .advertisement").Remove()
+	} else {
+		doc.Find("script, style, noscript").Remove()
+	}
 
 	title = strings.TrimSpace(doc.Find("title").Text())
 	if title == "" {
@@ -90,13 +105,13 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText str
 		case "h4", "h5", "h6":
 			sb.WriteString(fmt.Sprintf("#### %s\n\n", text))
 		case "p":
-			formattedText := formatElementText(s, baseURL)
+			formattedText := formatElementText(s, baseURL, mode)
 			if formattedText != "" {
 				sb.WriteString(fmt.Sprintf("%s\n\n", formattedText))
 			}
 		case "ul", "ol":
 			s.Find("li").Each(func(j int, li *goquery.Selection) {
-				itemText := formatElementText(li, baseURL)
+				itemText := formatElementText(li, baseURL, mode)
 				if itemText != "" {
 					sb.WriteString(fmt.Sprintf("- %s\n", itemText))
 				}
@@ -116,7 +131,7 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte) (markdownText str
 }
 
 // formatElementText processes links and inline code elements directly within DOM nodes
-func formatElementText(s *goquery.Selection, baseURL *url.URL) string {
+func formatElementText(s *goquery.Selection, baseURL *url.URL, mode string) string {
 	// Format inline code elements with backticks
 	s.Find("code").Each(func(j int, code *goquery.Selection) {
 		codeText := strings.TrimSpace(code.Text())
@@ -130,8 +145,8 @@ func formatElementText(s *goquery.Selection, baseURL *url.URL) string {
 		href, ok := a.Attr("href")
 		anchorText := strings.TrimSpace(a.Text())
 		if ok && anchorText != "" {
-			// Skip same-page anchor fragment links (e.g. #GOGC) to save thousands of LLM tokens
-			if strings.HasPrefix(href, "#") {
+			// Skip same-page anchor fragment links (e.g. #GOGC) ONLY in clean_rag mode
+			if mode == "clean_rag" && strings.HasPrefix(href, "#") {
 				a.SetText(anchorText)
 				return
 			}

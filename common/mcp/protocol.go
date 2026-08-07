@@ -86,6 +86,10 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 								"type":        "string",
 								"description": "The target website URL to scrape (e.g. https://golang.org)",
 							},
+							"mode": map[string]interface{}{
+								"type":        "string",
+								"description": "Extraction mode: 'clean_rag' (default, max token savings), 'preserve_links' (keep all URLs), or 'raw' (minimal filtering)",
+							},
 						},
 						"required": []string{"url"},
 					},
@@ -151,7 +155,8 @@ func HandleRPCMessage(reqBytes []byte, client *httpclient.Client) ([]byte, error
 			limitedBody := io.LimitReader(res.Response.Body, 10*1024*1024)
 			htmlBytes, _ := io.ReadAll(limitedBody)
 
-			mdText, tokens, title := markdown.ConvertHTMLToMarkdown(res.FinalURL, htmlBytes)
+			mode, _ := callParams.Arguments["mode"].(string)
+			mdText, tokens, title := markdown.ConvertHTMLToMarkdownWithMode(res.FinalURL, htmlBytes, mode)
 
 			// Auto-ingest scraped page into Document Processor, Tokenizer, Inverted Index, and Vector Store
 			cleanDoc, _ := processor.ProcessRawHTML(res.FinalURL, htmlBytes)
