@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"strings"
 	"sync"
+	"time"
 )
 
 type RobotsGroup struct {
@@ -82,6 +83,38 @@ func (rd *RobotsData) IsAllowed(userAgent, path string) bool {
 	}
 
 	return true
+}
+
+type DomainCacheManager struct {
+	mu     sync.RWMutex
+	cache  map[string]*RobotsData
+	expiry map[string]time.Time
+}
+
+var GlobalDomainCache = &DomainCacheManager{
+	cache:  make(map[string]*RobotsData),
+	expiry: make(map[string]time.Time),
+}
+
+// FetchAndCache parses and stores a domain's robots.txt rules with a 24-hour TTL cache.
+func (cm *DomainCacheManager) FetchAndCache(domain, rawContent string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.cache[domain] = ParseRobotsTxt(rawContent)
+	cm.expiry[domain] = time.Now().Add(24 * time.Hour)
+}
+
+// IsDomainAllowed checks if a path is allowed for a user agent under a cached domain's rules.
+func (cm *DomainCacheManager) IsDomainAllowed(userAgent, domain, path string) bool {
+	cm.mu.RLock()
+	data, exists := cm.cache[domain]
+	exp, _ := cm.expiry[domain]
+	cm.mu.RUnlock()
+
+	if !exists || time.Now().After(exp) {
+		return true // Fail-open default policy if unparsed or expired
+	}
+	return data.IsAllowed(userAgent, path)
 }
 
 var GlobalRobotsCache = &RobotsData{groups: make([]RobotsGroup, 0)}
