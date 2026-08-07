@@ -28,3 +28,30 @@ func TestRobotsTxtCompliance(t *testing.T) {
 		t.Errorf("expected /internal to be disallowed for AntigravityBot, got true")
 	}
 }
+
+func TestEndToEndRobotsDomainCaching(t *testing.T) {
+	domain := "testdomain.org"
+	robotsContent := `
+		User-agent: *
+		Disallow: /restricted/
+		Disallow: /admin
+	`
+
+	// 1. Fetch & Cache domain rules
+	GlobalDomainCache.FetchAndCache(domain, robotsContent)
+
+	// 2. Assert allowed public URL
+	if !IsAllowed("AntigravityBot", "https://testdomain.org/docs/getting-started") {
+		t.Fatalf("expected /docs to be allowed")
+	}
+
+	// 3. Assert disallowed restricted path URL
+	if IsAllowed("AntigravityBot", "https://testdomain.org/restricted/secret-data") {
+		t.Fatalf("expected /restricted/secret-data to be disallowed by robots.txt")
+	}
+
+	// 4. Assert disallowed admin path URL
+	if IsAllowed("AntigravityBot", "https://testdomain.org/admin/dashboard") {
+		t.Fatalf("expected /admin/dashboard to be disallowed by robots.txt")
+	}
+}

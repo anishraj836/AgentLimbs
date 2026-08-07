@@ -1,0 +1,36 @@
+name: AgentLimbs CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build & Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Verify Dependencies
+        run: go mod verify
+
+      - name: Build Monorepo Binaries
+        run: go build ./...
+
+      - name: Run Static Analysis (go vet)
+        run: go vet ./...
+
+      - name: Run Unit Tests
+        run: go test -v ./...
+
+      - name: Run Data Race Detector
+        run: go test -race -v ./common/mcp ./common/robotstxt ./crawler-service/httpclient ./indexer-service/indexer
