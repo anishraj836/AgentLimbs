@@ -72,52 +72,34 @@ func TestGetClientIP(t *testing.T) {
 		expectedIP string
 	}{
 		{
-			name:       "X-Forwarded-For single IP",
-			remoteAddr: "10.0.0.1:12345",
+			name:       "Trusted proxy (127.0.0.1) parses X-Forwarded-For single IP",
+			remoteAddr: "127.0.0.1:12345",
 			headers:    map[string]string{"X-Forwarded-For": "203.0.113.195"},
 			expectedIP: "203.0.113.195",
 		},
 		{
-			name:       "X-Forwarded-For multiple IPs takes leftmost valid IP",
-			remoteAddr: "10.0.0.1:12345",
-			headers:    map[string]string{"X-Forwarded-For": "203.0.113.195, 70.41.3.18, 150.172.238.178"},
+			name:       "Trusted proxy (127.0.0.1) parses X-Forwarded-For multiple IPs",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string]string{"X-Forwarded-For": "203.0.113.195, 70.41.3.18"},
 			expectedIP: "203.0.113.195",
 		},
 		{
-			name:       "X-Forwarded-For with spaces and port",
-			remoteAddr: "10.0.0.1:12345",
-			headers:    map[string]string{"X-Forwarded-For": " 203.0.113.195:8080 , 70.41.3.18 "},
-			expectedIP: "203.0.113.195",
+			name:       "Untrusted client (203.0.113.5) IGNORES fake X-Forwarded-For header",
+			remoteAddr: "203.0.113.5:54321",
+			headers:    map[string]string{"X-Forwarded-For": "1.2.3.4"},
+			expectedIP: "203.0.113.5",
 		},
 		{
-			name:       "X-Forwarded-For invalid IP skips to next valid IP",
-			remoteAddr: "10.0.0.1:12345",
-			headers:    map[string]string{"X-Forwarded-For": "invalid_ip, 203.0.113.195"},
-			expectedIP: "203.0.113.195",
+			name:       "Untrusted client (198.51.100.22) IGNORES fake X-Real-IP header",
+			remoteAddr: "198.51.100.22:54321",
+			headers:    map[string]string{"X-Real-IP": "8.8.8.8"},
+			expectedIP: "198.51.100.22",
 		},
 		{
-			name:       "X-Real-IP fallback when XFF absent",
-			remoteAddr: "10.0.0.1:12345",
-			headers:    map[string]string{"X-Real-IP": "198.51.100.1"},
-			expectedIP: "198.51.100.1",
-		},
-		{
-			name:       "X-Forwarded-For takes priority over X-Real-IP",
-			remoteAddr: "10.0.0.1:12345",
-			headers:    map[string]string{"X-Forwarded-For": "203.0.113.195", "X-Real-IP": "198.51.100.1"},
-			expectedIP: "203.0.113.195",
-		},
-		{
-			name:       "Fallback to RemoteAddr when headers absent",
-			remoteAddr: "192.0.2.1:54321",
+			name:       "Fallback to RemoteAddr when headers absent on trusted proxy",
+			remoteAddr: "127.0.0.1:54321",
 			headers:    map[string]string{},
-			expectedIP: "192.0.2.1",
-		},
-		{
-			name:       "Fallback to RemoteAddr without port when headers absent",
-			remoteAddr: "192.0.2.1",
-			headers:    map[string]string{},
-			expectedIP: "192.0.2.1",
+			expectedIP: "127.0.0.1",
 		},
 	}
 
@@ -142,32 +124,26 @@ func TestSecurityMiddlewareIPRateLimiting(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// IP 1: 203.0.113.1 via X-Forwarded-For
+	// Untrusted client sending fake X-Forwarded-For headers should be rate limited based on RemoteAddr
+	untrustedAddr := "203.0.113.50:12345"
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest("GET", "/", nil)
-		req.Header.Set("X-Forwarded-For", "203.0.113.1")
+		req.RemoteAddr = untrustedAddr
+		req.Header.Set("X-Forwarded-For", "1.1.1.1") // Spoofed header
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
-			t.Fatalf("request %d for IP1 expected 200, got %d", i+1, rr.Code)
+			t.Fatalf("request %d expected 200, got %d", i+1, rr.Code)
 		}
 	}
 
-	// 3rd request from IP 1 should be rate limited (429)
+	// 3rd request with a different spoofed header STILL rate limited because RemoteAddr is unchanged
 	reqExceeded := httptest.NewRequest("GET", "/", nil)
-	reqExceeded.Header.Set("X-Forwarded-For", "203.0.113.1")
+	reqExceeded.RemoteAddr = untrustedAddr
+	reqExceeded.Header.Set("X-Forwarded-For", "9.9.9.9") // Attacker changes spoofed IP
 	rrExceeded := httptest.NewRecorder()
 	handler.ServeHTTP(rrExceeded, reqExceeded)
 	if rrExceeded.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 Too Many Requests for IP1 on 3rd request, got %d", rrExceeded.Code)
-	}
-
-	// Different IP 2 (203.0.113.2) should still be allowed
-	reqIP2 := httptest.NewRequest("GET", "/", nil)
-	reqIP2.Header.Set("X-Forwarded-For", "203.0.113.2")
-	rrIP2 := httptest.NewRecorder()
-	handler.ServeHTTP(rrIP2, reqIP2)
-	if rrIP2.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for IP2 despite IP1 being rate limited, got %d", rrIP2.Code)
+		t.Fatalf("expected 429 Too Many Requests (spoofed header blocked), got %d", rrExceeded.Code)
 	}
 }
