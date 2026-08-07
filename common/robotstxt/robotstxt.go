@@ -107,6 +107,7 @@ var GlobalDomainCache = &DomainCacheManager{
 }
 
 // FetchAndCache parses and stores a domain's robots.txt rules with a 24-hour TTL cache.
+// TODO: Optionally add singleflight.Group to coalesce concurrent fetches for an uncached domain.
 func (cm *DomainCacheManager) FetchAndCache(domain, rawContent string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
