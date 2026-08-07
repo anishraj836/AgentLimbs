@@ -2,6 +2,7 @@ package robotstxt
 
 import (
 	"bufio"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -66,16 +67,25 @@ func ParseRobotsTxt(content string) *RobotsData {
 	return rd
 }
 
-func (rd *RobotsData) IsAllowed(userAgent, path string) bool {
+func (rd *RobotsData) IsAllowed(userAgent, targetURL string) bool {
 	rd.mu.RLock()
 	defer rd.mu.RUnlock()
+
+	reqURL, err := url.Parse(targetURL)
+	reqPath := targetURL
+	if err == nil {
+		reqPath = reqURL.Path
+	}
+	if reqPath == "" {
+		reqPath = "/"
+	}
 
 	uaLower := strings.ToLower(userAgent)
 
 	for _, group := range rd.groups {
 		if group.UserAgent == "*" || strings.Contains(uaLower, group.UserAgent) {
 			for _, disallow := range group.Disallowed {
-				if disallow != "" && strings.HasPrefix(path, disallow) {
+				if disallow != "" && strings.HasPrefix(reqPath, disallow) {
 					return false
 				}
 			}
@@ -104,22 +114,33 @@ func (cm *DomainCacheManager) FetchAndCache(domain, rawContent string) {
 	cm.expiry[domain] = time.Now().Add(24 * time.Hour)
 }
 
-// IsDomainAllowed checks if a path is allowed for a user agent under a cached domain's rules.
-func (cm *DomainCacheManager) IsDomainAllowed(userAgent, domain, path string) bool {
+// IsDomainAllowed checks if a target URL path is allowed for a user agent under a cached domain's rules.
+func (cm *DomainCacheManager) IsDomainAllowed(userAgent, targetURL string) (allowed bool, cached bool) {
+	reqURL, err := url.Parse(targetURL)
+	if err != nil {
+		return true, false
+	}
+	domain := reqURL.Hostname()
+	if domain == "" {
+		return true, false
+	}
+
 	cm.mu.RLock()
 	data, exists := cm.cache[domain]
 	exp, _ := cm.expiry[domain]
 	cm.mu.RUnlock()
 
 	if !exists || time.Now().After(exp) {
-		return true // Fail-open default policy if unparsed or expired
+		return true, false // Uncached or expired
 	}
-	return data.IsAllowed(userAgent, path)
+	return data.IsAllowed(userAgent, targetURL), true
 }
 
-var GlobalRobotsCache = &RobotsData{groups: make([]RobotsGroup, 0)}
-
-// IsAllowed is a package-level helper for Robots.txt compliance check.
+// IsAllowed is a package-level helper checking domain cache rules.
 func IsAllowed(userAgent, targetURL string) bool {
-	return GlobalRobotsCache.IsAllowed(userAgent, targetURL)
+	allowed, cached := GlobalDomainCache.IsDomainAllowed(userAgent, targetURL)
+	if cached {
+		return allowed
+	}
+	return true // Fail-open default policy
 }

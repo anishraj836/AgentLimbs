@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -98,6 +100,49 @@ type FetchResult struct {
 	FinalURL string // The URL after all redirects resolved
 }
 
+// EnsureRobotsCached fetches and caches /robots.txt for a domain if not already cached.
+func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
+	reqURL, err := url.Parse(targetURL)
+	if err != nil || reqURL.Hostname() == "" {
+		return
+	}
+	domain := reqURL.Hostname()
+
+	// Check if already cached
+	if _, cached := robotstxt.GlobalDomainCache.IsDomainAllowed("AntigravityBot", targetURL); cached {
+		return
+	}
+
+	// Fetch /robots.txt directly via guarded transport (skipping compliance recursion check)
+	robotsURL := reqURL.Scheme + "://" + reqURL.Host + "/robots.txt"
+	req, err := http.NewRequestWithContext(ctx, "GET", robotsURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", "AntigravityBot/1.0 (+https://example.com/bot)")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		robotstxt.GlobalDomainCache.FetchAndCache(domain, "")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		robotstxt.GlobalDomainCache.FetchAndCache(domain, "")
+		return
+	}
+
+	limitedBody := io.LimitReader(resp.Body, 1*1024*1024)
+	bodyBytes, err := io.ReadAll(limitedBody)
+	if err != nil {
+		robotstxt.GlobalDomainCache.FetchAndCache(domain, "")
+		return
+	}
+
+	robotstxt.GlobalDomainCache.FetchAndCache(domain, string(bodyBytes))
+}
+
 // Fetch executes an HTTP GET request with retries and exponential backoff.
 // It accepts a context to support cancellation during graceful shutdown.
 func (c *Client) Fetch(ctx context.Context, url string) (*FetchResult, error) {
@@ -106,9 +151,12 @@ func (c *Client) Fetch(ctx context.Context, url string) (*FetchResult, error) {
 	backoff := 1 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
-		// Check Robots.txt compliance engine before fetching (skip /robots.txt itself to prevent infinite recursion)
-		if !strings.HasSuffix(url, "/robots.txt") && !robotstxt.IsAllowed("AntigravityBot", url) {
-			return nil, fmt.Errorf("crawling disallowed by robots.txt rules for URL: %s", url)
+		// Ensure Robots.txt is fetched and cached per-domain before checking compliance
+		if !strings.HasSuffix(url, "/robots.txt") {
+			c.EnsureRobotsCached(ctx, url)
+			if !robotstxt.IsAllowed("AntigravityBot", url) {
+				return nil, fmt.Errorf("crawling disallowed by robots.txt rules for URL: %s", url)
+			}
 		}
 
 		// Create a fresh request on every attempt. Re-using a *http.Request
