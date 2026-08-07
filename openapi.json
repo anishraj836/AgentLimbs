@@ -1,0 +1,162 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "AgentLimbs AI Web Scraper & Hybrid Search API",
+    "description": "High-performance, token-efficient web scraping, structured JSON extraction, and BM25 + Vector RRF hybrid search engine for AI agents.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://api.agentlimbs.dev",
+      "description": "AgentLimbs Production Server"
+    }
+  ],
+  "paths": {
+    "/v1/scrape": {
+      "post": {
+        "summary": "Scrape Web Page to Clean Markdown",
+        "description": "Fetches a URL, strips boilerplate noise, and returns token-efficient Markdown.",
+        "operationId": "scrapeWebPage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "Target website URL to scrape"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "description": "Extraction mode: clean_rag (default), preserve_links, or raw"
+                  }
+                },
+                "required": ["url"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful markdown extraction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": { "type": "string" },
+                    "title": { "type": "string" },
+                    "markdown": { "type": "string" },
+                    "token_estimate": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/query": {
+      "post": {
+        "summary": "Hybrid RRF Search Over Corpus",
+        "description": "Searches indexed web corpus using BM25 keyword matching and vector semantic similarity.",
+        "operationId": "hybridSearchCorpus",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "Search query or topic"
+                  },
+                  "top_k": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5)"
+                  }
+                },
+                "required": ["query"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Top ranked search hits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "total_hits": { "type": "integer" },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "title": { "type": "string" },
+                          "url": { "type": "string" },
+                          "snippet": { "type": "string" },
+                          "rrf_score": { "type": "number" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/extract": {
+      "post": {
+        "summary": "Structured JSON Field Extractor",
+        "description": "Extracts custom structured key-value JSON fields from web Markdown.",
+        "operationId": "extractStructuredJSON",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "Target website URL"
+                  },
+                  "fields": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Fields to extract"
+                  }
+                },
+                "required": ["url", "fields"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Extracted JSON fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": { "type": "string" },
+                    "extracted": { "type": "object" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
