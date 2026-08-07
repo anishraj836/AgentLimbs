@@ -76,7 +76,7 @@ func TestEndToEndHTTPTestServerRobotsGating(t *testing.T) {
 	defer ts.Close()
 
 	client := NewClient()
-	client.EnableLoopbackForTesting() // Enable loopback for local httptest.Server
+	client.allowLoopbackForTesting = true // Set unexported field directly in white-box package test
 	ctx := context.Background()
 
 	// 1. Fetch allowed URL -> Must succeed

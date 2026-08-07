@@ -48,11 +48,6 @@ type Client struct {
 	allowLoopbackForTesting bool
 }
 
-// EnableLoopbackForTesting enables local loopback fetches strictly for unit testing.
-func (c *Client) EnableLoopbackForTesting() {
-	c.allowLoopbackForTesting = true
-}
-
 func NewClient() *Client {
 	c := &Client{}
 
