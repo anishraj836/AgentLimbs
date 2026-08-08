@@ -679,13 +679,14 @@ func GenerateHighlightedSnippet(body string, queryTerms []string, maxLen int) st
 // Index Engine Component
 
 type Engine struct {
-	mu         sync.RWMutex
-	Inverted   *InvertedIndex
-	Trie       *Trie
-	Vector     *VectorIndex
-	DocTitles  map[string]string
-	DocURLs    map[string]string
-	DocBodies  map[string]string
+	mu             sync.RWMutex
+	Inverted       *InvertedIndex
+	Trie           *Trie
+	Vector         *VectorIndex
+	ActiveEmbedder Embedder
+	DocTitles      map[string]string
+	DocURLs        map[string]string
+	DocBodies      map[string]string
 }
 
 type IndexEngine = Engine
@@ -693,13 +694,15 @@ type IndexEngine = Engine
 var GlobalEngine = NewEngine()
 
 func NewEngine() *Engine {
+	active := NewEmbedderFromEnv()
 	return &Engine{
-		Inverted:  NewInvertedIndex(),
-		Trie:      NewTrie(),
-		Vector:    NewVectorIndex(128),
-		DocTitles: make(map[string]string),
-		DocURLs:   make(map[string]string),
-		DocBodies: make(map[string]string),
+		Inverted:       NewInvertedIndex(),
+		Trie:           NewTrie(),
+		Vector:         NewVectorIndex(active.Dimensions()),
+		ActiveEmbedder: active,
+		DocTitles:      make(map[string]string),
+		DocURLs:        make(map[string]string),
+		DocBodies:      make(map[string]string),
 	}
 }
 
@@ -721,16 +724,19 @@ func (e *Engine) IndexDocumentWithSource(url, title, cleanBody string, termPosit
 	e.mu.Unlock()
 
 	e.Inverted.AddDocument(docID, termPositions, totalTokens)
-
 	for term, positions := range termPositions {
 		e.Trie.Insert(term, len(positions))
 	}
+	e.IndexDocumentVector(docID, title, cleanBody)
 
 	_ = storage.SaveCrawledDocument(context.Background(), url, title, cleanBody, totalTokens, sourceType, sourceURL)
 }
 
 func (e *Engine) IndexDocumentVector(docID, title, body string) {
-	vec := GenerateFeatureVector(title+" "+body, 128)
+	vec, err := e.ActiveEmbedder.Embed(context.Background(), title+" "+body)
+	if err != nil || len(vec) == 0 {
+		return
+	}
 	_ = e.Vector.AddVector(docID, vec)
 }
 
@@ -746,7 +752,7 @@ func (e *Engine) LoadFromDB(ctx context.Context) error {
 	e.DocBodies = make(map[string]string)
 	e.Inverted = NewInvertedIndex()
 	e.Trie = NewTrie()
-	e.Vector = NewVectorIndex(128)
+	e.Vector = NewVectorIndex(e.ActiveEmbedder.Dimensions())
 	e.mu.Unlock()
 
 	for _, d := range docs {
