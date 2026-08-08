@@ -1,218 +1,174 @@
 # 🦾 AgentLimbs
-# Start Agent Service
-go run agent-service/main.go
+
+> **High-Performance Web Crawler, Hybrid RAG Search Engine, and Model Context Protocol (MCP) Server for AI Agents.**
+
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Standard-purple.svg)](https://modelcontextprotocol.io/)
+
+**AgentLimbs** is a production-grade, token-efficient web ingestion, HTML extraction, and hybrid RAG search platform built in **Go**. It empowers AI Agents, LLM pipelines, and developer workflows to scrape, parse, index, and query web pages with microsecond-to-millisecond search latencies.
+
+---
+
+## 🌟 Key Capabilities
+
+- **🚀 Dual Deployment Modes**: Run as a lightweight, single-binary embedded server (`cmd/agentlimbs-light`) with zero external dependencies, or as a distributed 9-microservice event-driven stack via Docker Compose.
+- **🌳 HTML DOM AST Extractor (`internal/extractor`)**: Replaces fragile regex stripping with official Go DOM tree walking (`golang.org/x/net/html`) to convert web pages into clean, token-efficient Markdown (**82%+ token savings** over raw HTML).
+- **🔍 Hybrid RRF Search Engine (`internal/search`)**: Blends sparse keyword matching (**Okapi BM25**) and dense semantic vector similarity (**Subword 3-gram/4-gram L2 normalized vectors**) using Reciprocal Rank Fusion (k=60).
+- **⏳ Document Time-To-Live (TTL) & Janitor (`internal/storage`)**: Instant query-time expiration filtering (0ms delay) combined with a background cleanup janitor. Fully environment-configurable via `DEFAULT_TTL_SECONDS` and `JANITOR_INTERVAL`.
+- **🛡️ Anti-Bot Header Profiles & SPA Stepping (`internal/crawler`)**: Rotates modern Chrome 122 `Sec-Ch-Ua` header profiles, implements `FetchWithStepping` with jittered backoff on HTTP 403/401/429, and detects empty JavaScript SPA root containers.
+- **🔌 Native Model Context Protocol (MCP)**: Directly integrates with Antigravity, Cursor, and Claude Desktop via stdio JSON-RPC tool calls (`agent_limbs_scrape`, `agent_limbs_hybrid_search`).
+
+---
+
+## 🏗️ Architecture
+
+AgentLimbs is designed as a **Modular Monolith** with clear `internal/` package encapsulation:
+
+```text
+crawler-monorepo/
+├── cmd/
+│   ├── agentlimbs-light/    # Lightweight single-binary embedded server & CLI
+│   └── seed_sde_corpus/     # Batch SDE corpus ingestion script
+├── internal/
+│   ├── crawler/             # Stepping HTTP client, Chrome 122 headers, robots.txt cache
+│   ├── extractor/           # HTML DOM AST parser (golang.org/x/net/html) -> Markdown
+│   ├── index/               # BM25 inverted index, trie autocomplete, subword vector store
+│   ├── search/              # Hybrid Reciprocal Rank Fusion (RRF) search
+│   └── storage/             # PostgreSQL pool, schema migrations, TTL janitor, file fallback
+├── common/                  # Backward-compatibility package bridges
+├── mcp-server/              # Model Context Protocol stdio server binary
+└── docker-compose.yml       # Distributed microservices deployment stack
 ```
 
-#### A. Scrape Web Page to Clean Markdown (`POST /v1/scrape`)
-```bash
-curl -X POST http://localhost:8090/v1/scrape \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://golang.org",
-    "mode": "clean_rag"
-  }'
-```
-*Supports 3 Extraction Modes*:
-- `"clean_rag"` (Default): Strips DOM noise and same-page anchor URLs for **85%+ token savings**.
-- `"preserve_links"`: Preserves full Markdown URLs for generating clickable link lists.
-- `"raw"`: Minimal filtering; preserves full original DOM tags.
+---
 
-#### B. Structured JSON Field Extractor (`POST /v1/extract`)
+## ⚡ Quick Start
+
+### 1. Single-Binary Mode (Recommended for Local Dev & RAG)
+
+Run AgentLimbs as a single embedded Go process in 2 seconds:
+
 ```bash
-curl -X POST http://localhost:8090/v1/extract \
+# Clone and run single-binary server
+go run cmd/agentlimbs-light/main.go
+```
+
+The server boots instantly on port **`8080`** with file snapshot storage (`data/`).
+
+---
+
+### 2. Scrape & Auto-Index a Page
+
+Scrape any website URL, convert it to clean Markdown, and automatically index it into the BM25 and Vector search engines:
+
+```bash
+curl -X POST http://localhost:8080/v1/scrape \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://go.dev",
-    "fields": ["Title", "Concurrency", "License"]
+    "mode": "clean_rag",
+    "ttl_seconds": 86400
   }'
 ```
 
-#### C. Hybrid RRF Search Query (`POST /v1/agent/query`)
+**Response:**
+```json
+{
+  "url": "https://go.dev",
+  "title": "The Go Programming Language",
+  "markdown": "# The Go Programming Language\n\nBuild simple, secure, scalable systems...",
+  "token_estimate": 142,
+  "latency_ms": 32.4
+}
+```
+
+---
+
+### 3. Query Hybrid RRF Search
+
+Execute hybrid keyword + vector semantic search over your indexed corpus:
+
 ```bash
-curl -X POST http://localhost:8090/v1/agent/query \
+curl -X POST http://localhost:8080/v1/search \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "goroutines concurrency memory safety",
+    "query": "goroutine GMP scheduler concurrency",
     "top_k": 5
   }'
 ```
 
----
-
-### 4. Distributed Production Stack (Docker Compose & Cloud)
-Run the full 9-microservice event-driven crawling pipeline backed by Kafka and Redis (`agent-service`, `crawler-service`, `document-processor`, `embedding-service`, `frontier-service`, `indexer-service`, `mcp-server`, `parser-service`, `search-service`):
-
-```bash
-# Launch full Kafka, Redis, Postgres & Microservices stack
-docker-compose up -d
-
-# Seed target URLs into Frontier Service
-curl -X POST http://localhost:8080/api/v1/seeds \
-  -H "Content-Type: application/json" \
-  -d '{"urls": ["https://golang.org", "https://python.org", "https://rust-lang.org"]}'
+**Response:**
+```json
+{
+  "query": "goroutine GMP scheduler concurrency",
+  "latency_ms": 1.2,
+  "total_hits": 1,
+  "results": [
+    {
+      "doc_id": "https://go.dev",
+      "rrf_score": 0.03252,
+      "bm25_rank": 1,
+      "vector_rank": 1,
+      "title": "The Go Programming Language",
+      "url": "https://go.dev",
+      "snippet": "Build simple, secure, scalable systems with Go..."
+    }
+  ]
+}
 ```
 
 ---
 
-### 5. Step-by-Step Cloud Database Setup Guide (Supabase / Neon.tech / AWS RDS / Upstash)
+## ⚙️ Environment Variables
 
-AgentLimbs adheres to 12-Factor App design principles. You can switch from local Docker databases to cloud infrastructure (Supabase, Neon.tech, AWS RDS, Upstash Redis) in 3 simple steps:
+Configure AgentLimbs using environment variables in `.env` or system shell:
 
-#### Step 1: Provision Free Cloud Database Instances
-- **Cloud PostgreSQL**: Create a free project on **[Supabase.com](https://supabase.com)** or **[Neon.tech](https://neon.tech)** and copy your PostgreSQL Connection String URI.
-- **Cloud Redis**: Create a free database on **[Upstash.com](https://upstash.com)** and copy your Redis Host Address and Password.
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PORT` | HTTP server port for `agentlimbs-light` | `8080` |
+| `DEFAULT_TTL_SECONDS` | Default page expiration fallback (seconds) | `604800` *(7 days)* |
+| `JANITOR_INTERVAL` | Background TTL janitor cleanup frequency | `15m` *(15 minutes)* |
+| `AGENT_API_KEY` | Secret API Key for HTTP endpoints (`X-API-Key`) | *(Optional)* |
+| `TRUSTED_PROXIES` | Comma-separated CIDRs/IPs trusted for rate limit headers | `127.0.0.1,::1` |
+| `DATABASE_URL` | PostgreSQL connection string (falls back to file storage if unset) | `postgres://...` |
 
-#### Step 2: Initialize Cloud Database Schema (`schema.sql`)
-Apply the AgentLimbs relational schema to your cloud database:
+---
 
-```bash
-# Option A: Apply schema via psql command-line
-psql "$DATABASE_URL" -f common/db/schema.sql
+## 🔌 Model Context Protocol (MCP) Integration
 
-# Option B: Paste contents of common/db/schema.sql directly into Supabase SQL Editor / Neon Console
+Connect AgentLimbs to your AI IDE (Antigravity, Cursor, Claude Desktop) as a tool provider:
+
+### `.agents/mcp_config.json`
+
+```json
+{
+  "mcpServers": {
+    "agent-limbs": {
+      "command": "go",
+      "args": ["run", "mcp-server/main.go"]
+    }
+  }
+}
 ```
 
-#### Step 3: Configure Cloud Environment Variables
-Export your cloud credentials in your terminal or `.env` file:
+### Available MCP Tools
+
+1. **`agent_limbs_scrape`**: Scrapes target URL, extracts clean Markdown, and auto-indexes it with optional `ttl_seconds`.
+2. **`agent_limbs_hybrid_search`**: Searches the indexed corpus using hybrid BM25 + Vector RRF ranking.
+
+---
+
+## 🧪 Running Tests
+
+Run the complete workspace test suite (all unit & integration tests):
 
 ```bash
-# 1. Cloud PostgreSQL (sslmode=require is mandatory for cloud SSL connections)
-export DATABASE_URL="postgres://postgres.xxxx:password@db.xxxx.supabase.co:5432/postgres?sslmode=require"
-
-# 2. Cloud Redis (Upstash / Redis Enterprise)
-export REDIS_ADDR="redis-xxxx.upstash.io:6379"
-export REDIS_PASSWORD="your_upstash_password"
-
-# 3. Launch Agent Service connected to Cloud Infrastructure
-go run agent-service/main.go
-```
-
----
-
-## 🚀 System Pipeline & Microservices Architecture
-
-```text
-[ Seed URLs / API ] ──► POST /api/v1/seeds
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │  Frontier Service   │ ──► Redis Bloom Filter (Deduplication)
-                    └──────────┬──────────┘
-                               │ Kafka: crawl_requests
-                               ▼
-                    ┌─────────────────────┐
-                    │   Crawler Service   │ ──► Redis Rate-Limiter (Politeness)
-                    └──────────┬──────────┘ ──► Local Gzip File Storage + SSRF Guard
-                               │ Kafka: downloaded_pages
-                               ├──────────────────────────────────┐
-                               ▼                                  ▼
-                    ┌─────────────────────┐            ┌─────────────────────┐
-                    │   Parser Service    │            │ Document Processor  │
-                    └──────────┬──────────┘            └──────────┬──────────┘
-                               │ Kafka: discovered_urls           │ Kafka: parsed_documents
-                               │ (Loop back to Frontier)          ├────────────────────────┐
-                                                                  ▼                        ▼
-                                                       ┌─────────────────────┐  ┌─────────────────────┐
-                                                       │  Tokenizer Service  │  │ Embedding Service   │
-                                                       └──────────┬──────────┘  └──────────┬──────────┘
-                                                                  │                        │
-                                                                  ▼                        ▼
-                                                       ┌─────────────────────┐  ┌─────────────────────┐
-                                                       │ Inverted Index BM25 │  │ AI Vector Store     │
-                                                       └──────────┬──────────┘  └──────────┬──────────┘
-                                                                  └──────────┬─────────────┘
-                                                                             ▼
-                                                                  ┌─────────────────────┐
-                                                                  │ Agent Service (RRF) │
-                                                                  └──────────┬──────────┘
-                                                                             │
-                                                                             ▼
-                                                                  ┌─────────────────────┐
-                                                                  │  MCP Stdio Server   │
-                                                                  └─────────────────────┘
-                                                                             │
-                                                                             ▼
-                                                                  [ Claude Desktop / Cursor ]
-```
-
----
-
-## 🌟 Key Features Across All 5 Phases
-
-### Phase 1 — Distributed Web Crawler Infrastructure
-- **Frontier Service**: REST API (`POST /api/v1/seeds`) for seed URL ingestion with Redis-backed **Bloom Filter deduplication** ($O(1)$ lookup).
-- **Crawler Service**: Bounded Go worker routines (`concurrencyLimit: 50`), **Redis `SetNX` domain politeness rate limiting**, transparent Gzip disk storage, `io.LimitReader` memory safety caps (10MB limit), and Private IP Egress Guard (SSRF protection).
-- **Parser Service**: Concurrent DOM parser using `goquery` to extract, normalize, and resolve absolute outbound URLs, closing the autonomous crawling loop.
-- **Kafka Resilience**: Custom, thread-safe contiguous **OffsetTracker** eliminating out-of-order Kafka message commit data loss, plus **Dead-Letter Queue (`crawl_failed_dlq`)** error routing.
-
-### Phase 2 — Distributed Indexing & Statistical Search Engine
-- **Document Processor Service**: HTML boilerplate, script, CSS, navbar, footer, and ad removal.
-- **Tokenizer Service**: Unicode normalization (NFC), $O(1)$ HashSet stopword filtering, and English word reduction via a custom **Porter Stemmer**.
-- **Inverted Index Engine**: Thread-safe posting lists tracking `(DocID, TermFrequency, Positions []int)` for exact keyword and phrase search.
-- **Trie Autocomplete Service**: Concurrent $O(L)$ prefix tree returning top corpus frequency query completions.
-- **Okapi BM25 Ranker**: From-scratch mathematical implementation of Okapi BM25 ($k_1=1.2, b=0.75$) with Inverse Document Frequency (IDF) scoring and contextual `<mark>` highlighted text snippets.
-
-### Phase 3 — The Agentic Phase (AI Agents & Hybrid RAG Engine)
-- **Firecrawl-Style Scrape API (`POST /v1/scrape`)**: Converts HTML DOM trees into clean, Token-Efficient Github-Flavored Markdown (`# Headings`, `**Bold**`, `[Link](url)`), reducing LLM token consumption by **up to 5.6x (82%+ token reduction)** on verified test benchmark fixtures (e.g., HTML documentation pages tested via Tiktoken `cl100k_base` and `o200k_base`); note that actual token reduction is fixture-dependent.
-- **AI Vector Embedding Engine**: Generates $D=128$ normalized feature vectors via FNV hash-bucket bag-of-words encoding (rather than a deep neural embedding model) and computes **Cosine Similarity** math:
-  $$\text{CosineSimilarity}(\vec{u}, \vec{v}) = \frac{\vec{u} \cdot \vec{v}}{\|\vec{u}\| \|\vec{v}\|}$$
-- **Hybrid Search Engine via Reciprocal Rank Fusion (RRF)**: Merges sparse BM25 keyword search rankings with dense vector semantic rankings:
-  $$\text{RRF\_Score}(d) = \frac{1}{k + \text{rank}_{\text{BM25}}(d)} + \frac{1}{k + \text{rank}_{\text{Vector}}(d)}$$
-- **OpenAI & LangChain Tool Definitions (`GET /v1/agent/tools`)**: Exposes native JSON Schema function calling definitions so AI Agents can automatically register AgentLimbs as a tool.
-
-### Phase 4 — Model Context Protocol (MCP) Server Layer
-- **Standard MCP Protocol (`version 2024-11-05`)**: Native JSON-RPC 2.0 stdio server (`mcp-server/`) allowing **Claude Desktop** and **Cursor IDE** to plug directly into AgentLimbs.
-- **MCP Tools Exposed**: `agent_limbs_scrape` and `agent_limbs_hybrid_search`.
-- **MCP Resources Exposed**: `agentlimbs://stats` (corpus metrics) and `agentlimbs://document/{id}`.
-
-### Phase 5 — Complete Enterprise Suite
-- **Dual-Engine SPA Renderer**: Fast Path Go `net/http` + Slow Path `chromedp` DOM rendering for dynamic React/Vue SPAs.
-- **Robots.txt Compliance Engine**: Parses `robots.txt` rules (`User-agent`, `Disallow`, `Crawl-delay`) and caches rules in Redis.
-- **Sitemap.xml Auto-Discovery Engine**: Parses XML sitemap indices to auto-discover canonical site URLs.
-- **Web Graph PageRank Engine**: Computes Google-style PageRank domain authority scores using power iteration matrix math.
-- **Neural Cross-Encoder Reranker**: Performs deep contextual query-document relevance scoring on candidate search hits.
-- **Structured JSON Schema Extractor API (`POST /v1/extract`)**: Firecrawl-style structured JSON field extraction from Markdown.
-- **Real-Time Webhooks Push Engine**: Asynchronous HTTP POST push notifications delivered to external endpoints upon indexing.
-
----
-
-## 📊 REST & MCP Interface Reference
-
-| Service | Protocol / Port | Method / Endpoint | Description |
-| :--- | :---: | :--- | :--- |
-| **MCP Server** | **JSON-RPC stdio** | `mcp-server` | Native MCP Server for Claude Desktop & Cursor IDE |
-| **Agent Service** | `8090` | `POST /v1/scrape` | Firecrawl-style Scrape API (returns Markdown + token estimate) |
-| **Agent Service** | `8090` | `POST /v1/extract` | Structured JSON field extraction endpoint |
-| **Agent Service** | `8090` | `POST /v1/agent/query` | Hybrid RRF Search API (BM25 + AI Vector Semantic Ranks) |
-| **Agent Service** | `8090` | `GET /v1/agent/tools` | OpenAI Function Calling & LangChain Tool Definitions |
-| **Frontier Service** | `8080` | `POST /api/v1/seeds` | Submit seed URLs: `{"urls": ["https://golang.org"]}` |
-| **Search API** | `8088` | `POST /search` | Search query: `{"query": "golang programming", "limit": 10}` |
-| **Search API** | `8088` | `GET /autocomplete?q=pro` | Prefix autocomplete query completions |
-
----
-
-## 🧪 Testing & Verification
-
-```bash
-# Run unit tests across all packages
 go test -v ./...
-
-# Run thread race detector (100% data-race free)
-go test -race -v ./...
-
-# Run static code analysis
-go vet ./...
 ```
 
 ---
 
-## 💻 Tech Stack & Dependencies
+## 📄 License
 
-- **Language**: Go 1.21+
-- **Protocol Standard**: Model Context Protocol (MCP version `2024-11-05`)
-- **Event Bus**: Apache Kafka (`segmentio/kafka-go`)
-- **Cache & Locks**: Redis (`redis/go-redis/v9`)
-- **Database**: PostgreSQL (`jackc/pgx/v5`)
-- **DOM Parser**: `goquery` (`PuerkitoBio/goquery`)
-- **Observability**: Prometheus & Grafana
-- **License**: MIT
+Distributed under the MIT License. See `LICENSE` for details.
