@@ -127,6 +127,10 @@ Configure AgentLimbs using environment variables in `.env` or system shell:
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `PORT` | HTTP server port for `agentlimbs-light` | `8080` |
+| `EMBEDDING_PROVIDER` | Pluggable embedding engine (`default`, `cohere`, `openai`, `ollama`) | `default` *(128-D Subword)* |
+| `COHERE_API_KEY` | API Key when `EMBEDDING_PROVIDER=cohere` | *(Optional)* |
+| `OPENAI_API_KEY` | API Key when `EMBEDDING_PROVIDER=openai` | *(Optional)* |
+| `OLLAMA_HOST` | Host URL when `EMBEDDING_PROVIDER=ollama` | `http://localhost:11434` |
 | `DEFAULT_TTL_SECONDS` | Default page expiration fallback (seconds) | `604800` *(7 days)* |
 | `JANITOR_INTERVAL` | Background TTL janitor cleanup frequency | `15m` *(15 minutes)* |
 | `AGENT_API_KEY` | Secret API Key for HTTP endpoints (`X-API-Key`) | *(Optional)* |
