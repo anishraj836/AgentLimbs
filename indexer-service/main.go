@@ -42,6 +42,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start background TTL janitor routine to purge expired documents every 15 minutes
+	indexer.GlobalEngine.StartTTLJanitor(ctx, 15*time.Minute)
+
 	const concurrencyLimit = 10
 	sem := make(chan struct{}, concurrencyLimit)
 	var wg sync.WaitGroup

@@ -238,6 +238,16 @@ func (s *EmbeddedServer) SetupRouter() http.Handler {
 	return r
 }
 
+// GetJanitorInterval returns the configured janitor interval duration from JANITOR_INTERVAL env (fallback: 15 minutes).
+func GetJanitorInterval() time.Duration {
+	if env := os.Getenv("JANITOR_INTERVAL"); env != "" {
+		if d, err := time.ParseDuration(env); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 15 * time.Minute
+}
+
 func initStorage(dataDir string) {
 	if dataDir == "" {
 		dataDir = "data"
@@ -275,6 +285,9 @@ func initStorage(dataDir string) {
 		}
 		logger.Log.Info(fmt.Sprintf("Hydrated %d documents into memory from file fallback", len(docs)))
 	}
+
+	// Start background TTL Janitor routine to purge expired pages on JANITOR_INTERVAL (fallback: 15m)
+	index.GlobalEngine.StartTTLJanitor(context.Background(), GetJanitorInterval())
 }
 
 func saveStorage(dataDir string) {

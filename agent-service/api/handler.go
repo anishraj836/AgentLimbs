@@ -22,13 +22,23 @@ import (
 	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
+// GetDefaultTTL returns the configured default TTL duration from DEFAULT_TTL_SECONDS env (fallback: 7 days).
+func GetDefaultTTL() time.Duration {
+	if env := os.Getenv("DEFAULT_TTL_SECONDS"); env != "" {
+		if secs, err := strconv.Atoi(env); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 7 * 24 * time.Hour
+}
+
 // ClampTTL validates and clamps LLM-supplied or API-supplied TTL seconds within safe boundaries.
 func ClampTTL(llmTTL int) (time.Duration, bool) {
 	if llmTTL == 0 {
 		return 0, false
 	}
 	if llmTTL < 0 {
-		return 7 * 24 * time.Hour, true
+		return GetDefaultTTL(), true
 	}
 
 	if llmTTL < 300 {
