@@ -16,6 +16,18 @@ func NewClient() *Client {
 	return crawler.NewClient()
 }
 
+func NewClientWithTransport(tr http.RoundTripper) *Client {
+	return crawler.NewClientWithTransport(tr)
+}
+
+func NewTestClient(allowLoopback bool) *Client {
+	return crawler.NewTestClient(allowLoopback)
+}
+
+func NewTestClientWithTransport(tr http.RoundTripper, allowLoopback bool) *Client {
+	return crawler.NewTestClientWithTransport(tr, allowLoopback)
+}
+
 func GetRotatedHeaderProfile() HeaderProfile {
 	return crawler.GetRotatedHeaderProfile()
 }

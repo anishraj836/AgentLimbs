@@ -8,22 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
-	"unsafe"
 
 	"github.com/crawler-monorepo/common/robotstxt"
 	"github.com/crawler-monorepo/internal/crawler"
 )
-
-func setTransport(c *crawler.Client, tr http.RoundTripper) {
-	val := reflect.ValueOf(c).Elem().FieldByName("client")
-	httpClientPtr := (**http.Client)(unsafe.Pointer(val.UnsafeAddr()))
-	if *httpClientPtr != nil {
-		(*httpClientPtr).Transport = tr
-	}
-}
 
 func TestHealthEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -68,8 +58,7 @@ func TestScrapeAndSearchEndpoints(t *testing.T) {
 
 	// 1. Setup embedded server with mock transport
 	tmpDir := t.TempDir()
-	server := NewEmbeddedServer(tmpDir)
-	setTransport(server.HTTPClient(), &mockTransport{})
+	server := NewEmbeddedServerWithClient(tmpDir, crawler.NewClientWithTransport(&mockTransport{}))
 	router := server.SetupRouter()
 
 	// 2. Test POST /v1/scrape

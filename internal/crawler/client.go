@@ -348,42 +348,58 @@ type FetchResult struct {
 }
 
 func NewClient() *Client {
-	c := &Client{}
+	return NewTestClientWithTransport(nil, false)
+}
 
-	dialer := &net.Dialer{
-		Timeout:   5 * time.Second,
-		KeepAlive: 30 * time.Second,
+func NewClientWithTransport(tr http.RoundTripper) *Client {
+	return NewTestClientWithTransport(tr, false)
+}
+
+func NewTestClient(allowLoopback bool) *Client {
+	return NewTestClientWithTransport(nil, allowLoopback)
+}
+
+func NewTestClientWithTransport(tr http.RoundTripper, allowLoopback bool) *Client {
+	c := &Client{
+		allowLoopbackForTesting: allowLoopback,
 	}
 
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
-		DisableCompression:  false,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
+	if tr == nil {
+		dialer := &net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}
 
-			ips, err := net.LookupIP(host)
-			if err != nil {
-				return nil, err
-			}
-
-			for _, ip := range ips {
-				if !c.allowLoopbackForTesting && IsPrivateIP(ip) {
-					return nil, fmt.Errorf("blocked request to private/internal IP: %s (%s)", ip.String(), host)
+		tr = &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
+			DisableCompression:  false,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
 				}
-			}
 
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
-		},
+				ips, err := net.LookupIP(host)
+				if err != nil {
+					return nil, err
+				}
+
+				for _, ip := range ips {
+					if !c.allowLoopbackForTesting && IsPrivateIP(ip) {
+						return nil, fmt.Errorf("blocked request to private/internal IP: %s (%s)", ip.String(), host)
+					}
+				}
+
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+			},
+		}
 	}
 
 	c.client = &http.Client{
-		Transport: transport,
+		Transport: tr,
 		Timeout:   10 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {

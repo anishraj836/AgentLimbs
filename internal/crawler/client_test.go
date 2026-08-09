@@ -95,9 +95,7 @@ func TestFetchWithStepping(t *testing.T) {
 		},
 	}
 
-	client := NewClient()
-	client.client.Transport = mockTransport
-	client.allowLoopbackForTesting = true
+	client := NewTestClientWithTransport(mockTransport, true)
 
 	// Pre-seed robots cache to allow domain
 	GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nDisallow:")

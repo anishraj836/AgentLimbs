@@ -34,11 +34,18 @@ type EmbeddedServer struct {
 }
 
 func NewEmbeddedServer(dataDir string) *EmbeddedServer {
+	return NewEmbeddedServerWithClient(dataDir, crawler.NewClient())
+}
+
+func NewEmbeddedServerWithClient(dataDir string, httpClient *crawler.Client) *EmbeddedServer {
 	if dataDir == "" {
 		dataDir = "data"
 	}
+	if httpClient == nil {
+		httpClient = crawler.NewClient()
+	}
 	return &EmbeddedServer{
-		httpClient: crawler.NewClient(),
+		httpClient: httpClient,
 		dataDir:    dataDir,
 	}
 }
