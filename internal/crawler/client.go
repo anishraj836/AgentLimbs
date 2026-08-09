@@ -396,16 +396,6 @@ func NewClient() *Client {
 	return c
 }
 
-func (c *Client) SetAllowLoopbackForTesting(allow bool) {
-	c.allowLoopbackForTesting = allow
-}
-
-func (c *Client) SetTransport(tr http.RoundTripper) {
-	if c.client != nil {
-		c.client.Transport = tr
-	}
-}
-
 func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
 	reqURL, err := url.Parse(targetURL)
 	if err != nil || reqURL.Hostname() == "" {
@@ -413,37 +403,34 @@ func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
 	}
 	domain := reqURL.Hostname()
 
-	if GlobalDomainCache.HasDomainCached(targetURL) {
-		return
+	fetchFunc := func(d string) (string, error) {
+		robotsURL := reqURL.Scheme + "://" + reqURL.Host + "/robots.txt"
+		req, err := http.NewRequestWithContext(ctx, "GET", robotsURL, nil)
+		if err != nil {
+			return "", nil
+		}
+		req.Header.Set("User-Agent", "AntigravityBot/1.0 (+https://example.com/bot)")
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return "", nil
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", nil
+		}
+
+		limitedBody := io.LimitReader(resp.Body, 1*1024*1024)
+		bodyBytes, err := io.ReadAll(limitedBody)
+		if err != nil {
+			return "", nil
+		}
+
+		return string(bodyBytes), nil
 	}
 
-	robotsURL := reqURL.Scheme + "://" + reqURL.Host + "/robots.txt"
-	req, err := http.NewRequestWithContext(ctx, "GET", robotsURL, nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("User-Agent", "AntigravityBot/1.0 (+https://example.com/bot)")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		GlobalDomainCache.FetchAndCache(domain, "")
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		GlobalDomainCache.FetchAndCache(domain, "")
-		return
-	}
-
-	limitedBody := io.LimitReader(resp.Body, 1*1024*1024)
-	bodyBytes, err := io.ReadAll(limitedBody)
-	if err != nil {
-		GlobalDomainCache.FetchAndCache(domain, "")
-		return
-	}
-
-	GlobalDomainCache.FetchAndCache(domain, string(bodyBytes))
+	_, _ = GlobalDomainCache.EnsureRobotsCached(domain, fetchFunc)
 }
 
 func (c *Client) Fetch(ctx context.Context, targetURL string) (*FetchResult, error) {

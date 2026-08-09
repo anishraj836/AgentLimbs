@@ -5,13 +5,20 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/crawler-monorepo/common/robotstxt"
 	"github.com/crawler-monorepo/internal/crawler"
 )
+
+func setAllowLoopback(c *crawler.Client, allow bool) {
+	val := reflect.ValueOf(c).Elem().FieldByName("allowLoopbackForTesting")
+	reflect.NewAt(val.Type(), unsafe.Pointer(val.UnsafeAddr())).Elem().SetBool(allow)
+}
 
 func TestPrivateIPGuard(t *testing.T) {
 	privateIPs := []string{
@@ -86,7 +93,7 @@ func TestEndToEndHTTPTestServerRobotsGating(t *testing.T) {
 	defer ts.Close()
 
 	client := NewClient()
-	client.SetAllowLoopbackForTesting(true)
+	setAllowLoopback(client, true)
 	ctx := context.Background()
 
 	// 1. Fetch allowed URL -> Must succeed
@@ -191,7 +198,7 @@ func TestSteppingRetryBackoff(t *testing.T) {
 	robotstxt.GlobalDomainCache.FetchAndCache("127.0.0.1", "User-agent: *\nAllow: /\n")
 
 	client := NewClient()
-	client.SetAllowLoopbackForTesting(true)
+	setAllowLoopback(client, true)
 	ctx := context.Background()
 
 	start := time.Now()

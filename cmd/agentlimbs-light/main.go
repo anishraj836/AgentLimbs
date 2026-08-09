@@ -224,16 +224,39 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func SecurityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedKey := os.Getenv("AGENT_API_KEY")
+		if expectedKey != "" {
+			apiKey := r.Header.Get("X-API-Key")
+			if apiKey == "" {
+				apiKey = r.URL.Query().Get("api_key")
+			}
+			if apiKey != expectedKey {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *EmbeddedServer) SetupRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
 	r.Get("/health", s.HealthHandler)
-	r.Post("/v1/scrape", s.ScrapeHandler)
-	r.Get("/v1/scrape", s.ScrapeHandler)
-	r.Post("/v1/search", s.SearchHandler)
-	r.Get("/v1/search", s.SearchHandler)
+
+	r.Group(func(r chi.Router) {
+		r.Use(SecurityMiddleware)
+		r.Post("/v1/scrape", s.ScrapeHandler)
+		r.Get("/v1/scrape", s.ScrapeHandler)
+		r.Post("/v1/search", s.SearchHandler)
+		r.Get("/v1/search", s.SearchHandler)
+	})
 
 	return r
 }

@@ -8,11 +8,22 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/crawler-monorepo/common/robotstxt"
+	"github.com/crawler-monorepo/internal/crawler"
 )
+
+func setTransport(c *crawler.Client, tr http.RoundTripper) {
+	val := reflect.ValueOf(c).Elem().FieldByName("client")
+	httpClientPtr := (**http.Client)(unsafe.Pointer(val.UnsafeAddr()))
+	if *httpClientPtr != nil {
+		(*httpClientPtr).Transport = tr
+	}
+}
 
 func TestHealthEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -58,7 +69,7 @@ func TestScrapeAndSearchEndpoints(t *testing.T) {
 	// 1. Setup embedded server with mock transport
 	tmpDir := t.TempDir()
 	server := NewEmbeddedServer(tmpDir)
-	server.HTTPClient().SetTransport(&mockTransport{})
+	setTransport(server.HTTPClient(), &mockTransport{})
 	router := server.SetupRouter()
 
 	// 2. Test POST /v1/scrape
@@ -138,4 +149,59 @@ func TestStorageInitAndSave(t *testing.T) {
 
 	// Test initStorage loads without crashing
 	initStorage(tmpDir)
+}
+
+func TestSecurityMiddleware(t *testing.T) {
+	os.Setenv("AGENT_API_KEY", "secret-test-key")
+	defer os.Unsetenv("AGENT_API_KEY")
+
+	tmpDir := t.TempDir()
+	server := NewEmbeddedServer(tmpDir)
+	router := server.SetupRouter()
+
+	// 1. Request without API Key -> expect 401 Unauthorized
+	req1, err := http.NewRequest("GET", "/v1/search?q=test", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401 Unauthorized without key, got %d", rec1.Code)
+	}
+
+	// 2. Request with invalid API Key -> expect 401 Unauthorized
+	req2, err := http.NewRequest("GET", "/v1/search?q=test", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req2.Header.Set("X-API-Key", "invalid-key")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401 Unauthorized with invalid key, got %d", rec2.Code)
+	}
+
+	// 3. Request with valid X-API-Key header -> expect 200 OK
+	req3, err := http.NewRequest("GET", "/v1/search?q=test", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req3.Header.Set("X-API-Key", "secret-test-key")
+	rec3 := httptest.NewRecorder()
+	router.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Errorf("expected status 200 OK with valid X-API-Key header, got %d", rec3.Code)
+	}
+
+	// 4. Request with valid api_key query param -> expect 200 OK
+	req4, err := http.NewRequest("GET", "/v1/search?q=test&api_key=secret-test-key", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	rec4 := httptest.NewRecorder()
+	router.ServeHTTP(rec4, req4)
+	if rec4.Code != http.StatusOK {
+		t.Errorf("expected status 200 OK with valid api_key query param, got %d", rec4.Code)
+	}
 }
