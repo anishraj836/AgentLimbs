@@ -799,19 +799,39 @@ func (e *Engine) StartTTLJanitor(ctx context.Context, interval time.Duration) {
 	}()
 }
 
-func (e *Engine) StartPeriodicDBHydrator(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				_ = e.LoadFromDB(ctx)
-			}
+func (e *Engine) IndexDocumentIncrementalByURL(ctx context.Context, targetURL string) error {
+	doc, err := storage.GetCrawledDocumentByURL(ctx, targetURL)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return fmt.Errorf("document not found for url: %s", targetURL)
+	}
+
+	rawTokens := strings.Fields(strings.ToLower(doc.CleanBody))
+	termPositions := make(map[string][]int)
+	for idx, raw := range rawTokens {
+		clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
+		if clean == "" || stopwords.IsStopword(clean) {
+			continue
 		}
-	}()
+		stemmed := stemmer.Stem(clean)
+		termPositions[stemmed] = append(termPositions[stemmed], idx)
+	}
+
+	e.mu.Lock()
+	e.DocTitles[doc.URL] = doc.Title
+	e.DocURLs[doc.URL] = doc.URL
+	e.DocBodies[doc.URL] = doc.CleanBody
+	e.mu.Unlock()
+
+	e.Inverted.AddDocument(doc.URL, termPositions, doc.TotalTokens)
+	for term, positions := range termPositions {
+		e.Trie.Insert(term, len(positions))
+	}
+	e.IndexDocumentVector(doc.URL, doc.Title, doc.CleanBody)
+
+	return nil
 }
 
 func (e *Engine) GetDocumentMetadata(docID string) (title, url, body string, exists bool) {

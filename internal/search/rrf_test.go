@@ -29,7 +29,7 @@ func TestReciprocalRankFusion(t *testing.T) {
 	}
 }
 
-func TestCrossEncoderReranking(t *testing.T) {
+func TestKeywordTitleBoostReranking(t *testing.T) {
 	query := "golang web crawler"
 
 	candidates := []HybridSearchHit{

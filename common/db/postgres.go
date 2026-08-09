@@ -32,6 +32,10 @@ func GetCrawledDocuments(ctx context.Context) ([]CrawledDocument, error) {
 	return storage.GetCrawledDocuments(ctx)
 }
 
+func GetCrawledDocumentByURL(ctx context.Context, targetURL string) (*CrawledDocument, error) {
+	return storage.GetCrawledDocumentByURL(ctx, targetURL)
+}
+
 func DeleteExpiredDocuments(ctx context.Context) (int64, error) {
 	return storage.DeleteExpiredDocuments(ctx)
 }

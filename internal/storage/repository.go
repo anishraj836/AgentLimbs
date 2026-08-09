@@ -113,6 +113,29 @@ func GetCrawledDocuments(ctx context.Context) ([]CrawledDocument, error) {
 	return getFromFileFallback()
 }
 
+func GetCrawledDocumentByURL(ctx context.Context, targetURL string) (*CrawledDocument, error) {
+	if Pool != nil {
+		query := `SELECT id, url, title, clean_body, total_tokens, COALESCE(source_type, 'web_crawled'), COALESCE(source_url, url), expires_at FROM crawled_pages WHERE url = $1 AND (expires_at IS NULL OR expires_at > NOW());`
+		row := Pool.QueryRow(ctx, query, targetURL)
+		var doc CrawledDocument
+		err := row.Scan(&doc.ID, &doc.URL, &doc.Title, &doc.CleanBody, &doc.TotalTokens, &doc.SourceType, &doc.SourceURL, &doc.ExpiresAt)
+		if err == nil {
+			return &doc, nil
+		}
+	}
+
+	docs, err := getFromFileFallback()
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range docs {
+		if d.URL == targetURL {
+			return &d, nil
+		}
+	}
+	return nil, nil
+}
+
 func DeleteExpiredDocuments(ctx context.Context) (int64, error) {
 	var totalDeleted int64
 	if Pool != nil {

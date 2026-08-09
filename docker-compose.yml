@@ -129,10 +129,40 @@ services:
       - "8088:8088"
     environment:
       DATABASE_URL: "postgres://crawler:crawler_password@postgres:5432/crawler_db?sslmode=disable"
+      KAFKA_BROKERS: "kafka:29092"
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - crawler_network
+
+  indexer-service:
+    build:
+      context: .
+      dockerfile: indexer-service/Dockerfile
+    container_name: indexer-service
+    environment:
+      KAFKA_BROKERS: "kafka:29092"
+      DATABASE_URL: "postgres://crawler:crawler_password@postgres:5432/crawler_db?sslmode=disable"
+    depends_on:
+      - kafka
+      - postgres
+    networks:
+      - crawler_network
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: mcp-server/Dockerfile
+    container_name: mcp-server
+    environment:
+      DATABASE_URL: "postgres://crawler:crawler_password@postgres:5432/crawler_db?sslmode=disable"
     depends_on:
       - postgres
     networks:
       - crawler_network
+    stdin_open: true
+    tty: true
 
 volumes:
   zk-data:

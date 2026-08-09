@@ -7,8 +7,9 @@ import (
 
 type RerankedHit = search.RerankedHit
 
-func ComputeCrossEncoderScore(query string, title string, snippet string) float64 {
-	return search.ComputeCrossEncoderScore(query, title, snippet)
+// ComputeKeywordTitleBoostScore computes exact keyword and title frequency boosts for post-RRF search candidate re-ranking.
+func ComputeKeywordTitleBoostScore(query string, title string, snippet string) float64 {
+	return search.ComputeKeywordTitleBoostScore(query, title, snippet)
 }
 
 func RerankCandidates(query string, candidateHits []hybrid.HybridSearchHit, topK int) []RerankedHit {

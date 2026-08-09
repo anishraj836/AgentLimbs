@@ -127,7 +127,8 @@ type RerankedHit struct {
 	Snippet      string  `json:"snippet"`
 }
 
-func ComputeCrossEncoderScore(query string, title string, snippet string) float64 {
+// ComputeKeywordTitleBoostScore computes exact keyword and title frequency boosts for post-RRF search candidate re-ranking.
+func ComputeKeywordTitleBoostScore(query string, title string, snippet string) float64 {
 	qWords := strings.Fields(strings.ToLower(query))
 	if len(qWords) == 0 {
 		return 0.0
@@ -159,8 +160,8 @@ func RerankCandidates(query string, candidateHits []HybridSearchHit, topK int) [
 
 	var reranked []RerankedHit
 	for i, hit := range candidateHits {
-		crossScore := ComputeCrossEncoderScore(query, hit.Title, hit.Snippet)
-		finalScore := (hit.RRFScore * 100.0) + crossScore
+		boostScore := ComputeKeywordTitleBoostScore(query, hit.Title, hit.Snippet)
+		finalScore := (hit.RRFScore * 100.0) + boostScore
 
 		reranked = append(reranked, RerankedHit{
 			DocID:        hit.DocID,

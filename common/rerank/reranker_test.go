@@ -6,7 +6,7 @@ import (
 	"github.com/crawler-monorepo/common/hybrid"
 )
 
-func TestCrossEncoderReranking(t *testing.T) {
+func TestKeywordTitleBoostReranking(t *testing.T) {
 	hits := []hybrid.HybridSearchHit{
 		{DocID: "doc1", RRFScore: 0.015, Title: "Generic Web Page", Snippet: "some text"},
 		{DocID: "doc2", RRFScore: 0.014, Title: "Golang Concurrency Guide", Snippet: "learn goroutines and channels in go"},

@@ -1,9 +1,12 @@
 package index
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/crawler-monorepo/internal/storage"
 )
 
 func TestEngineIndexAndSearch(t *testing.T) {
@@ -99,4 +102,39 @@ func mathAbs(f float64) float64 {
 		return -f
 	}
 	return f
+}
+
+func TestIndexDocumentIncrementalByURL(t *testing.T) {
+	eng := NewEngine()
+	termPositions1 := map[string][]int{"golang": {0}}
+	eng.IndexDocument("https://golang.org", "Go Language", "Golang initial doc", termPositions1, 3)
+
+	ctx := context.Background()
+	doc2URL := "https://example.com/inc"
+	_ = storage.SaveCrawledDocument(ctx, doc2URL, "Incremental Document", "Golang concurrency incremental text", 4, "web_crawled", doc2URL)
+
+	err := eng.IndexDocumentIncrementalByURL(ctx, doc2URL)
+	if err != nil {
+		t.Fatalf("IndexDocumentIncrementalByURL failed: %v", err)
+	}
+
+	hits := eng.SearchBM25("golang", 10)
+	if len(hits) < 2 {
+		t.Fatalf("Expected at least 2 BM25 hits after incremental index, got %d", len(hits))
+	}
+
+	foundDoc1 := false
+	foundDoc2 := false
+	for _, h := range hits {
+		if h.DocID == "https://golang.org" {
+			foundDoc1 = true
+		}
+		if h.DocID == doc2URL {
+			foundDoc2 = true
+		}
+	}
+
+	if !foundDoc1 || !foundDoc2 {
+		t.Errorf("Expected both doc1 and doc2 in index after incremental add, got doc1=%v, doc2=%v", foundDoc1, foundDoc2)
+	}
 }

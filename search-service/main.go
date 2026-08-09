@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/kafka"
@@ -25,7 +24,6 @@ func main() {
 	if err := indexer.GlobalEngine.LoadFromDB(context.Background()); err != nil {
 		logger.Log.Info("No existing persisted corpus loaded from DB", zap.Error(err))
 	}
-	indexer.GlobalEngine.StartPeriodicDBHydrator(context.Background(), 10*time.Second)
 
 	rawBrokers := strings.Split(os.Getenv("KAFKA_BROKERS"), ",")
 	var kafkaBrokers []string
@@ -48,10 +46,17 @@ func main() {
 					continue
 				}
 
-				if err := indexer.GlobalEngine.LoadFromDB(ctx); err != nil {
-					logger.Log.Error("Failed to reload index from DB on index_updates event", zap.Error(err))
-				} else {
-					logger.Log.Info("Successfully reloaded index from DB via index_updates event")
+				targetURL := string(msg.Key)
+				if targetURL == "" || targetURL == "indexed" {
+					targetURL = string(msg.Value)
+				}
+
+				if targetURL != "" && targetURL != "indexed" {
+					if err := indexer.GlobalEngine.IndexDocumentIncrementalByURL(ctx, targetURL); err != nil {
+						logger.Log.Error("Failed to incrementally index URL on index_updates event", zap.String("url", targetURL), zap.Error(err))
+					} else {
+						logger.Log.Info("Successfully incrementally indexed document via index_updates event", zap.String("url", targetURL))
+					}
 				}
 
 				if err := consumer.Commit(ctx, msg); err != nil {
