@@ -6,9 +6,9 @@ import (
 	"os"
 
 	"github.com/crawler-monorepo/agent-service/api"
-	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/logger"
-	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
@@ -18,8 +18,8 @@ func main() {
 	logger.InitLogger(os.Getenv("ENV"))
 	defer logger.Sync()
 
-	db.InitDB(os.Getenv("DATABASE_URL"))
-	if err := indexer.GlobalEngine.LoadFromDB(context.Background()); err != nil {
+	storage.InitDB(os.Getenv("DATABASE_URL"))
+	if err := index.GlobalEngine.LoadFromDB(context.Background()); err != nil {
 		logger.Log.Info("No existing persisted corpus loaded from DB into agent-service memory")
 	}
 

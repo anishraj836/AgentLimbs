@@ -6,10 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/crawler-monorepo/common/db"
 	"github.com/crawler-monorepo/common/kafka"
 	"github.com/crawler-monorepo/common/logger"
-	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/storage"
 	"github.com/crawler-monorepo/search-service/api"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -20,8 +20,8 @@ func main() {
 	logger.InitLogger(os.Getenv("ENV"))
 	defer logger.Sync()
 
-	db.InitDB(os.Getenv("DATABASE_URL"))
-	if err := indexer.GlobalEngine.LoadFromDB(context.Background()); err != nil {
+	storage.InitDB(os.Getenv("DATABASE_URL"))
+	if err := index.GlobalEngine.LoadFromDB(context.Background()); err != nil {
 		logger.Log.Info("No existing persisted corpus loaded from DB", zap.Error(err))
 	}
 
@@ -52,7 +52,7 @@ func main() {
 				}
 
 				if targetURL != "" && targetURL != "indexed" {
-					if err := indexer.GlobalEngine.IndexDocumentIncrementalByURL(ctx, targetURL); err != nil {
+					if err := index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, targetURL); err != nil {
 						logger.Log.Error("Failed to incrementally index URL on index_updates event", zap.String("url", targetURL), zap.Error(err))
 					} else {
 						logger.Log.Info("Successfully incrementally indexed document via index_updates event", zap.String("url", targetURL))
@@ -66,7 +66,7 @@ func main() {
 		}()
 	}
 
-	handler := api.NewSearchHandler(indexer.GlobalEngine)
+	handler := api.NewSearchHandler(index.GlobalEngine)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

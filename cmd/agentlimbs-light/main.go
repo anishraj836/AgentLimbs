@@ -16,13 +16,11 @@ import (
 	"github.com/crawler-monorepo/agent-service/api"
 	"github.com/crawler-monorepo/common/logger"
 	"github.com/crawler-monorepo/common/utils"
-	"github.com/crawler-monorepo/embedding-service/embedder"
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
 	"github.com/crawler-monorepo/internal/index"
 	"github.com/crawler-monorepo/internal/search"
 	"github.com/crawler-monorepo/internal/storage"
-	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
@@ -123,40 +121,30 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(res.FinalURL, htmlBytes, req.Mode)
 
 	cleanDoc, _ := extractor.ProcessRawHTML(res.FinalURL, htmlBytes)
-	tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
-	index.GlobalEngine.IndexDocumentWithSource(
-		tokenizedDoc.URL,
-		tokenizedDoc.Title,
-		tokenizedDoc.CleanBody,
-		tokenizedDoc.TermPositions,
-		tokenizedDoc.TotalTokens,
-		"embedded_scraped",
-		res.FinalURL,
-	)
-
-	embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
-
-	if ttlDuration, hasTTL := api.ClampTTL(req.TTLSeconds); hasTTL {
-		_ = storage.SaveCrawledDocumentWithTTL(
-			r.Context(),
-			tokenizedDoc.URL,
-			tokenizedDoc.Title,
-			tokenizedDoc.CleanBody,
-			tokenizedDoc.TotalTokens,
-			"embedded_scraped",
-			res.FinalURL,
-			ttlDuration,
-		)
-	} else {
-		_ = storage.SaveCrawledDocument(
-			r.Context(),
-			tokenizedDoc.URL,
-			tokenizedDoc.Title,
-			tokenizedDoc.CleanBody,
-			tokenizedDoc.TotalTokens,
-			"embedded_scraped",
-			res.FinalURL,
-		)
+	if cleanDoc != nil {
+		index.GlobalEngine.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+		if ttlDuration, hasTTL := api.ClampTTL(req.TTLSeconds); hasTTL {
+			_ = storage.SaveCrawledDocumentWithTTL(
+				r.Context(),
+				cleanDoc.URL,
+				cleanDoc.Title,
+				cleanDoc.Body,
+				tokens,
+				"embedded_scraped",
+				res.FinalURL,
+				ttlDuration,
+			)
+		} else {
+			_ = storage.SaveCrawledDocument(
+				r.Context(),
+				cleanDoc.URL,
+				cleanDoc.Title,
+				cleanDoc.Body,
+				tokens,
+				"embedded_scraped",
+				res.FinalURL,
+			)
+		}
 	}
 
 	saveStorage(s.dataDir)
@@ -191,7 +179,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	var req SearchRequest
 
 	if r.Method == http.MethodPost {
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		json.NewDecoder(r.Body).Decode(&req)
 	} else {
 		req.Query = r.URL.Query().Get("q")
 		if req.Query == "" {
@@ -214,8 +202,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 		req.TopK*2,
 	)
 
-	queryVec := index.GenerateFeatureVector(req.Query, 128)
-	vecHits := embedder.GlobalVectorIndex.SearchNearest(queryVec, req.TopK*2)
+	vecHits := index.GlobalEngine.SearchVector(req.Query, req.TopK*2)
 
 	fusedHits := search.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
 
@@ -293,7 +280,7 @@ func initStorage(dataDir string) {
 
 	vectorPath := filepath.Join(dataDir, "vector_index.json")
 	if _, err := os.Stat(vectorPath); err == nil {
-		if err := embedder.GlobalVectorIndex.LoadSnapshot(vectorPath); err == nil {
+		if err := index.GlobalEngine.Vector.LoadSnapshot(vectorPath); err == nil {
 			logger.Log.Info("Loaded vector index snapshot from file fallback: " + vectorPath)
 		}
 	}
@@ -301,17 +288,7 @@ func initStorage(dataDir string) {
 	docs, err := storage.GetCrawledDocuments(context.Background())
 	if err == nil && len(docs) > 0 {
 		for _, d := range docs {
-			tokDoc := tokenizer.TokenizePipeline(d.URL, d.Title, d.CleanBody)
-			index.GlobalEngine.IndexDocumentWithSource(
-				tokDoc.URL,
-				tokDoc.Title,
-				tokDoc.CleanBody,
-				tokDoc.TermPositions,
-				tokDoc.TotalTokens,
-				d.SourceType,
-				d.SourceURL,
-			)
-			embedder.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
+			index.GlobalEngine.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
 		}
 		logger.Log.Info(fmt.Sprintf("Hydrated %d documents into memory from file fallback", len(docs)))
 	}
@@ -330,7 +307,7 @@ func saveStorage(dataDir string) {
 	_ = index.GlobalEngine.Inverted.SaveSnapshot(indexPath)
 
 	vectorPath := filepath.Join(dataDir, "vector_index.json")
-	_ = embedder.GlobalVectorIndex.SaveSnapshot(vectorPath)
+	_ = index.GlobalEngine.Vector.SaveSnapshot(vectorPath)
 }
 
 func main() {

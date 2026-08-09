@@ -8,9 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/crawler-monorepo/common/db"
-	"github.com/crawler-monorepo/indexer-service/indexer"
-	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
+	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/storage"
 )
 
 func TestCrossProcessSearchSync(t *testing.T) {
@@ -20,16 +19,16 @@ func TestCrossProcessSearchSync(t *testing.T) {
 	url := "https://example.com/golang-concurrency"
 	title := "Go Concurrency Patterns"
 	cleanBody := "Goroutines and channels enable high performance concurrent execution in Go programs."
-	tokDoc := tokenizer.TokenizePipeline(url, title, cleanBody)
+	totalTokens := len(strings.Fields(cleanBody))
 
 	// Save to DB / storage
-	err := db.SaveCrawledDocument(ctx, tokDoc.URL, tokDoc.Title, tokDoc.CleanBody, tokDoc.TotalTokens, "web_crawled", tokDoc.URL)
+	err := storage.SaveCrawledDocument(ctx, url, title, cleanBody, totalTokens, "web_crawled", url)
 	if err != nil {
 		t.Fatalf("failed to save document: %v", err)
 	}
 
 	// 2. Simulate search-service periodic DB hydrator running
-	searchEngine := indexer.NewIndexEngine()
+	searchEngine := index.NewEngine()
 	err = searchEngine.LoadFromDB(ctx)
 	if err != nil {
 		t.Fatalf("failed to load from DB into search-service engine: %v", err)

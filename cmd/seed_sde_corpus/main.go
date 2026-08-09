@@ -4,15 +4,12 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
-	"github.com/crawler-monorepo/common/bm25"
-	"github.com/crawler-monorepo/common/db"
-	"github.com/crawler-monorepo/common/hybrid"
-	"github.com/crawler-monorepo/common/vector"
-	"github.com/crawler-monorepo/embedding-service/embedder"
-	"github.com/crawler-monorepo/indexer-service/indexer"
-	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
+	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/search"
+	"github.com/crawler-monorepo/internal/storage"
 )
 
 type SDEDomain struct {
@@ -215,25 +212,13 @@ func main() {
 				cleanBody := fmt.Sprintf(domain.Template, topic) +
 					fmt.Sprintf(" Detailed technical analysis for %s. Key concepts include performance benchmarking, production trade-offs, architecture patterns, and software development engineering best practices.", topic)
 
-				// Tokenize document
-				tokDoc := tokenizer.TokenizePipeline(url, title, cleanBody)
+				totalTokens := len(strings.Fields(cleanBody))
 
 				// 1. Save to shared Database / Storage
-				_ = db.SaveCrawledDocument(ctx, tokDoc.URL, tokDoc.Title, tokDoc.CleanBody, tokDoc.TotalTokens, "sde_corpus", tokDoc.URL)
+				_ = storage.SaveCrawledDocument(ctx, url, title, cleanBody, totalTokens, "sde_corpus", url)
 
-				// 2. Index into Inverted Index & Autocomplete Trie
-				indexer.GlobalEngine.IndexDocumentWithSource(
-					tokDoc.URL,
-					tokDoc.Title,
-					tokDoc.CleanBody,
-					tokDoc.TermPositions,
-					tokDoc.TotalTokens,
-					"sde_corpus",
-					tokDoc.URL,
-				)
-
-				// 3. Index into Dense Vector Store
-				embedder.IndexDocumentVector(tokDoc.URL, tokDoc.Title, tokDoc.CleanBody)
+				// 2. Index into Inverted Index & Autocomplete Trie & Vector Store
+				index.GlobalEngine.IndexDocumentVector(url, title, cleanBody)
 			}
 		}
 	}
@@ -244,7 +229,7 @@ func main() {
 	fmt.Printf("⏱️ Ingestion Time: %v (%.2f docs/sec)\n", duration, float64(totalIngested)/duration.Seconds())
 
 	// Print Corpus Statistics
-	totalDocs, avgLen, vocabSize := indexer.GlobalEngine.Inverted.GetStats()
+	totalDocs, avgLen, vocabSize := index.GlobalEngine.Inverted.GetStats()
 	fmt.Printf("\n📈 Corpus Metadata & Indexing Statistics:\n")
 	fmt.Printf("   - Total Indexed Documents: %d\n", totalDocs)
 	fmt.Printf("   - Average Document Length: %.2f tokens\n", avgLen)
@@ -262,15 +247,13 @@ func main() {
 	fmt.Printf("\n🔍 Testing Hybrid RRF Search Across 1,000+ SDE Corpus Pages:\n")
 	for _, q := range testQueries {
 		// 1. Sparse BM25
-		titles, urls, bodies := indexer.GlobalEngine.GetMetadataMaps()
-		bm25Hits := bm25.RankDocuments(q, indexer.GlobalEngine.Inverted, titles, urls, bodies, 10)
+		bm25Hits := index.GlobalEngine.Inverted.RankDocuments(q, index.GlobalEngine.DocTitles, index.GlobalEngine.DocURLs, index.GlobalEngine.DocBodies, 10)
 
 		// 2. Dense Vector
-		queryVec := vector.GenerateFeatureVector(q, 128)
-		vecHits := embedder.GlobalVectorIndex.SearchNearest(queryVec, 10)
+		vecHits := index.GlobalEngine.SearchVector(q, 10)
 
 		// 3. RRF Fusion
-		fused := hybrid.ReciprocalRankFusion(bm25Hits, vecHits, 3)
+		fused := search.ReciprocalRankFusion(bm25Hits, vecHits, 3)
 
 		fmt.Printf("\n  Query: '%s' -> Top Hits:\n", q)
 		for i, hit := range fused {

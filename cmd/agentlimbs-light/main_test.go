@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/crawler-monorepo/common/robotstxt"
 	"github.com/crawler-monorepo/internal/crawler"
 )
 
@@ -54,7 +53,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestScrapeAndSearchEndpoints(t *testing.T) {
 	testURL := "https://example.com/embedded-test-page"
-	robotstxt.GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nAllow: /\n")
+	crawler.GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nAllow: /\n")
 
 	// 1. Setup embedded server with mock transport
 	tmpDir := t.TempDir()

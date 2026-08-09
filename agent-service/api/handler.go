@@ -13,13 +13,11 @@ import (
 	"time"
 
 	"github.com/crawler-monorepo/common/utils"
-	"github.com/crawler-monorepo/embedding-service/embedder"
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
 	"github.com/crawler-monorepo/internal/index"
 	"github.com/crawler-monorepo/internal/search"
 	"github.com/crawler-monorepo/internal/storage"
-	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
 )
 
 // GetDefaultTTL returns the configured default TTL duration from DEFAULT_TTL_SECONDS env (fallback: 7 days).
@@ -262,28 +260,31 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes, "clean_rag")
 
 	cleanDoc, _ := extractor.ProcessRawHTML(result.FinalURL, htmlBytes)
-	tokenizedDoc := tokenizer.TokenizePipeline(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
-	index.GlobalEngine.IndexDocument(
-		tokenizedDoc.URL,
-		tokenizedDoc.Title,
-		tokenizedDoc.CleanBody,
-		tokenizedDoc.TermPositions,
-		tokenizedDoc.TotalTokens,
-	)
-
-	if ttlDuration, hasTTL := ClampTTL(req.TTLSeconds); hasTTL {
-		_ = storage.SaveCrawledDocumentWithTTL(
-			r.Context(),
-			tokenizedDoc.URL,
-			tokenizedDoc.Title,
-			tokenizedDoc.CleanBody,
-			tokenizedDoc.TotalTokens,
-			"web_crawled",
-			tokenizedDoc.URL,
-			ttlDuration,
-		)
+	if cleanDoc != nil {
+		index.GlobalEngine.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+		if ttlDuration, hasTTL := ClampTTL(req.TTLSeconds); hasTTL {
+			_ = storage.SaveCrawledDocumentWithTTL(
+				r.Context(),
+				cleanDoc.URL,
+				cleanDoc.Title,
+				cleanDoc.Body,
+				tokens,
+				"web_crawled",
+				cleanDoc.URL,
+				ttlDuration,
+			)
+		} else {
+			_ = storage.SaveCrawledDocument(
+				r.Context(),
+				cleanDoc.URL,
+				cleanDoc.Title,
+				cleanDoc.Body,
+				tokens,
+				"web_crawled",
+				cleanDoc.URL,
+			)
+		}
 	}
-	embedder.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 
@@ -327,8 +328,7 @@ func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
 		req.TopK*2,
 	)
 
-	queryVec := index.GenerateFeatureVector(req.Query, 128)
-	vecHits := embedder.GlobalVectorIndex.SearchNearest(queryVec, req.TopK*2)
+	vecHits := index.GlobalEngine.SearchVector(req.Query, req.TopK*2)
 
 	fusedHits := search.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
 

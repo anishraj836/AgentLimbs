@@ -13,11 +13,18 @@ import (
 	"github.com/crawler-monorepo/common/kafka"
 	"github.com/crawler-monorepo/common/logger"
 	"github.com/crawler-monorepo/common/metrics"
-	"github.com/crawler-monorepo/indexer-service/indexer"
-	"github.com/crawler-monorepo/tokenizer-service/tokenizer"
+	"github.com/crawler-monorepo/internal/index"
 	ckafka "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 )
+
+type TokenizedDocument struct {
+	URL           string              `json:"url"`
+	Title         string              `json:"title"`
+	CleanBody     string              `json:"clean_body"`
+	TermPositions map[string][]int    `json:"term_positions"`
+	TotalTokens   int                 `json:"total_tokens"`
+}
 
 func main() {
 	logger.InitLogger(os.Getenv("ENV"))
@@ -43,7 +50,7 @@ func main() {
 	defer cancel()
 
 	// Start background TTL janitor routine to purge expired documents every 15 minutes
-	indexer.GlobalEngine.StartTTLJanitor(ctx, 15*time.Minute)
+	index.GlobalEngine.StartTTLJanitor(ctx, 15*time.Minute)
 
 	const concurrencyLimit = 10
 	sem := make(chan struct{}, concurrencyLimit)
@@ -69,11 +76,11 @@ func main() {
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				var tokenizedDoc tokenizer.TokenizedDocument
+				var tokenizedDoc TokenizedDocument
 				if err := json.Unmarshal(m.Value, &tokenizedDoc); err != nil {
 					logger.Log.Error("Failed to unmarshal tokenized document", zap.Error(err))
 				} else {
-					indexer.GlobalEngine.IndexDocument(
+					index.GlobalEngine.IndexDocument(
 						tokenizedDoc.URL,
 						tokenizedDoc.Title,
 						tokenizedDoc.CleanBody,

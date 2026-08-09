@@ -6,17 +6,16 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/crawler-monorepo/common/bm25"
-	"github.com/crawler-monorepo/common/trie"
-	"github.com/crawler-monorepo/indexer-service/indexer"
+	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/search"
 	"github.com/go-chi/chi/v5"
 )
 
 type SearchHandler struct {
-	engine *indexer.IndexEngine
+	engine *index.Engine
 }
 
-func NewSearchHandler(engine *indexer.IndexEngine) *SearchHandler {
+func NewSearchHandler(engine *index.Engine) *SearchHandler {
 	return &SearchHandler{engine: engine}
 }
 
@@ -27,10 +26,10 @@ type SearchRequest struct {
 }
 
 type SearchResponse struct {
-	Query        string           `json:"query"`
-	TotalHits    int              `json:"total_hits"`
-	LatencyMs    float64          `json:"latency_ms"`
-	Results      []bm25.SearchHit `json:"results"`
+	Query     string                  `json:"query"`
+	TotalHits int                     `json:"total_hits"`
+	LatencyMs float64                 `json:"latency_ms"`
+	Results   []search.HybridSearchHit `json:"results"`
 }
 
 func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
@@ -51,14 +50,15 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		req.Limit = 10
 	}
 
-	hits := bm25.RankDocuments(
+	bm25Hits := h.engine.Inverted.RankDocuments(
 		req.Query,
-		h.engine.Inverted,
 		h.engine.DocTitles,
 		h.engine.DocURLs,
 		h.engine.DocBodies,
 		req.Limit,
 	)
+	vectorHits := h.engine.SearchVector(req.Query, req.Limit)
+	hits := search.ReciprocalRankFusion(bm25Hits, vectorHits, req.Limit)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 
@@ -81,7 +81,7 @@ func (h *SearchHandler) Autocomplete(w http.ResponseWriter, r *http.Request) {
 
 	results := h.engine.Trie.SearchPrefix(prefix, limit)
 	if results == nil {
-		results = make([]trie.AutocompleteResult, 0)
+		results = make([]index.AutocompleteResult, 0)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

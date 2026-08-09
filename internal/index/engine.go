@@ -515,6 +515,16 @@ func ComputeBM25Score(tf int, docLen int, avgDocLen float64, idf float64) float6
 	return idf * (num / den)
 }
 
+func (inv *InvertedIndex) RankDocuments(
+	query string,
+	docTitles map[string]string,
+	docURLs map[string]string,
+	docBodies map[string]string,
+	topK int,
+) []SearchHit {
+	return RankDocuments(query, inv, docTitles, docURLs, docBodies, topK)
+}
+
 func RankDocuments(
 	query string,
 	invIndex *InvertedIndex,
