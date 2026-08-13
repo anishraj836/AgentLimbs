@@ -339,6 +339,49 @@ func (s *EmbeddedServer) AutocompleteHandler(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+func (s *EmbeddedServer) WebSearchHandler(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
+	var req SearchRequest
+
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	} else {
+		req.Query = r.URL.Query().Get("q")
+		if req.Query == "" {
+			req.Query = r.URL.Query().Get("query")
+		}
+		req.TopK, _ = strconv.Atoi(r.URL.Query().Get("top_k"))
+	}
+
+	if req.TopK <= 0 {
+		req.TopK = 5
+	}
+	if req.TopK > 50 {
+		req.TopK = 50
+	}
+
+	adapter := search.NewMetasearchAdapter(index.GlobalEngine)
+	hits, err := adapter.Search(r.Context(), req.Query, req.TopK)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	latency := float64(time.Since(t0).Microseconds()) / 1000.0
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(SearchResponse{
+		Query:     req.Query,
+		LatencyMs: latency,
+		TotalHits: len(hits),
+		Results:   hits,
+	})
+}
+
 func (s *EmbeddedServer) SetupRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -354,6 +397,8 @@ func (s *EmbeddedServer) SetupRouter() http.Handler {
 		r.Get("/v1/scrape", s.ScrapeHandler)
 		r.Post("/v1/search", s.SearchHandler)
 		r.Get("/v1/search", s.SearchHandler)
+		r.Post("/v1/web-search", s.WebSearchHandler)
+		r.Get("/v1/web-search", s.WebSearchHandler)
 		r.Get("/v1/autocomplete", s.AutocompleteHandler)
 	})
 

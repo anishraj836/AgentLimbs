@@ -425,6 +425,47 @@ func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *AgentHandler) WebSearch(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
+	var req AgentQueryRequest
+
+	if r.Method == http.MethodPost {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	} else {
+		req.Query = r.URL.Query().Get("q")
+		if req.Query == "" {
+			req.Query = r.URL.Query().Get("query")
+		}
+		req.TopK, _ = strconv.Atoi(r.URL.Query().Get("top_k"))
+	}
+
+	if req.TopK <= 0 {
+		req.TopK = 5
+	}
+	if req.TopK > 50 {
+		req.TopK = 50
+	}
+
+	adapter := search.NewMetasearchAdapter(index.GlobalEngine)
+	hits, err := adapter.Search(r.Context(), req.Query, req.TopK)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	latency := float64(time.Since(t0).Microseconds()) / 1000.0
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"query":      req.Query,
+		"latency_ms": latency,
+		"total_hits": len(hits),
+		"results":    hits,
+	})
+}
+
 func (h *AgentHandler) Tools(w http.ResponseWriter, r *http.Request) {
 	tools := []map[string]interface{}{
 		{
