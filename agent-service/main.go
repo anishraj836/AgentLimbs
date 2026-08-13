@@ -68,6 +68,8 @@ func main() {
 	r.Get("/v1/agent/query", handler.AgentQuery)
 	r.Post("/v1/web-search", handler.WebSearch)
 	r.Get("/v1/web-search", handler.WebSearch)
+	r.Post("/v1/agentic-search", handler.AgenticSearch)
+	r.Get("/v1/agentic-search", handler.AgenticSearch)
 	r.Get("/v1/agent/tools", handler.Tools)
 
 	port := os.Getenv("AGENT_PORT")

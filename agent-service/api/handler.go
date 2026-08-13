@@ -466,6 +466,36 @@ func (h *AgentHandler) WebSearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *AgentHandler) AgenticSearch(w http.ResponseWriter, r *http.Request) {
+	var req search.AgenticSearchRequest
+
+	if r.Method == http.MethodPost {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	} else {
+		req.Query = r.URL.Query().Get("q")
+		if req.Query == "" {
+			req.Query = r.URL.Query().Get("query")
+		}
+		req.Model = r.URL.Query().Get("model")
+		req.LLMApiKey = r.URL.Query().Get("llm_api_key")
+		req.LLMBaseURL = r.URL.Query().Get("llm_base_url")
+		req.TopK, _ = strconv.Atoi(r.URL.Query().Get("top_k"))
+	}
+
+	pipeline := search.NewAgenticPipeline(index.GlobalEngine)
+	resp, err := pipeline.Execute(r.Context(), req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func (h *AgentHandler) Tools(w http.ResponseWriter, r *http.Request) {
 	tools := []map[string]interface{}{
 		{
