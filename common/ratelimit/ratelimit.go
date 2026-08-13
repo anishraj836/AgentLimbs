@@ -43,15 +43,48 @@ func (tb *TokenBucket) Allow() bool {
 	return false
 }
 
-// RateLimiterMiddleware returns an HTTP handler middleware enforcing token bucket rate limits.
+// KeyedRateLimiter manages separate token buckets per client key (e.g. IP address or API key).
+type KeyedRateLimiter struct {
+	rate     float64
+	capacity float64
+	buckets  map[string]*TokenBucket
+	mu       sync.Mutex
+}
+
+func NewKeyedRateLimiter(rate float64, capacity float64) *KeyedRateLimiter {
+	return &KeyedRateLimiter{
+		rate:     rate,
+		capacity: capacity,
+		buckets:  make(map[string]*TokenBucket),
+	}
+}
+
+func (k *KeyedRateLimiter) Allow(key string) bool {
+	k.mu.Lock()
+	tb, exists := k.buckets[key]
+	if !exists {
+		tb = NewTokenBucket(k.rate, k.capacity)
+		k.buckets[key] = tb
+	}
+	k.mu.Unlock()
+
+	return tb.Allow()
+}
+
+// RateLimiterMiddleware returns an HTTP handler middleware enforcing token bucket rate limits per client IP / Key.
 func RateLimiterMiddleware(rate float64, capacity float64) func(http.Handler) http.Handler {
-	limiter := NewTokenBucket(rate, capacity)
+	limiter := NewKeyedRateLimiter(rate, capacity)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !limiter.Allow() {
+			clientKey := r.Header.Get("X-API-Key")
+			if clientKey == "" {
+				clientKey = r.RemoteAddr
+			}
+
+			if !limiter.Allow(clientKey) {
 				w.Header().Set("Retry-After", "1")
-				http.Error(w, `{"error":"Too Many Requests","message":"Rate limit exceeded. Please retry after a brief delay."}`, http.StatusTooManyRequests)
+				http.Error(w, `{"error":"Too Many Requests","message":"Rate limit exceeded for client. Please retry after a brief delay."}`, http.StatusTooManyRequests)
 				return
 			}
 			next.ServeHTTP(w, r)

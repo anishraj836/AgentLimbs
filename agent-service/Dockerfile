@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
@@ -9,11 +9,15 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/agent-service ./agent-service/main.go
 
-FROM alpine:latest
+FROM alpine:3.19
+
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-COPY --from=builder /app/agent-service .
+COPY --from=builder --chown=appuser:appgroup /app/agent-service .
+
+USER appuser
 
 EXPOSE 8090
 
