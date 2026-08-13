@@ -31,3 +31,29 @@ func TestParseSitemapXML(t *testing.T) {
 		t.Errorf("unexpected sitemap URLs: %v", urls)
 	}
 }
+
+func TestParseSitemapIndexXML(t *testing.T) {
+	sitemapIndexXML := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+		<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+			<sitemap>
+				<loc>https://example.com/sitemap1.xml</loc>
+			</sitemap>
+			<sitemap>
+				<loc>https://example.com/sitemap2.xml</loc>
+			</sitemap>
+		</sitemapindex>
+	`)
+
+	urls, err := ParseSitemapXML(sitemapIndexXML)
+	if err != nil {
+		t.Fatalf("ParseSitemapXML for index failed: %v", err)
+	}
+
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 child sitemap URLs, got %d", len(urls))
+	}
+
+	if urls[0] != "https://example.com/sitemap1.xml" || urls[1] != "https://example.com/sitemap2.xml" {
+		t.Errorf("unexpected sitemap index URLs: %v", urls)
+	}
+}

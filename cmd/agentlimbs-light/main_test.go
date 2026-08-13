@@ -52,6 +52,7 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestScrapeAndSearchEndpoints(t *testing.T) {
+	os.Unsetenv("AGENT_API_KEY")
 	testURL := "https://example.com/embedded-test-page"
 	crawler.GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nAllow: /\n")
 

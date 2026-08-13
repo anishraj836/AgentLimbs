@@ -52,6 +52,21 @@ func (idx *InvertedIndex) AddDocument(docID string, termPositions map[string][]i
 
 	if oldLen, exists := idx.docLengths[docID]; exists {
 		idx.totalDocLength -= int64(oldLen)
+		for term, pl := range idx.postings {
+			if _, present := termPositions[term]; !present {
+				newEntries := pl.Entries[:0]
+				for _, entry := range pl.Entries {
+					if entry.DocID != docID {
+						newEntries = append(newEntries, entry)
+					}
+				}
+				pl.Entries = newEntries
+				pl.DocumentFrequency = len(pl.Entries)
+				if pl.DocumentFrequency == 0 {
+					delete(idx.postings, term)
+				}
+			}
+		}
 	} else {
 		idx.totalDocuments++
 	}
@@ -202,7 +217,7 @@ func NewTrie() *Trie {
 
 func (t *Trie) Insert(term string, freq int) {
 	term = strings.TrimSpace(strings.ToLower(term))
-	if term == "" {
+	if term == "" || len([]rune(term)) > 64 {
 		return
 	}
 
@@ -680,7 +695,20 @@ func GenerateHighlightedSnippet(body string, queryTerms []string, maxLen int) st
 
 	runes := []rune(result)
 	if len(runes) > maxLen {
-		result = string(runes[:maxLen]) + "..."
+		cut := maxLen
+		sub := string(runes[:cut])
+		lastOpen := strings.LastIndex(sub, "<")
+		lastClose := strings.LastIndex(sub, ">")
+		if lastOpen > lastClose {
+			cut = lastOpen
+			sub = string(runes[:cut])
+		}
+		markOpenCount := strings.Count(sub, "<mark>")
+		markCloseCount := strings.Count(sub, "</mark>")
+		if markOpenCount > markCloseCount {
+			sub += "</mark>"
+		}
+		result = sub + "..."
 	}
 
 	return result
@@ -688,32 +716,49 @@ func GenerateHighlightedSnippet(body string, queryTerms []string, maxLen int) st
 
 // Index Engine Component
 
+type MetadataShard struct {
+	mu     sync.RWMutex
+	titles map[string]string
+	urls   map[string]string
+	bodies map[string]string
+}
+
 type Engine struct {
 	mu             sync.RWMutex
+	shards         [64]MetadataShard
 	Inverted       *InvertedIndex
 	Trie           *Trie
 	Vector         *VectorIndex
 	ActiveEmbedder Embedder
-	DocTitles      map[string]string
-	DocURLs        map[string]string
-	DocBodies      map[string]string
 }
 
 type IndexEngine = Engine
 
 var GlobalEngine = NewEngine()
 
+func (e *Engine) getShard(docID string) *MetadataShard {
+	var h uint32 = 2166136261
+	for i := 0; i < len(docID); i++ {
+		h ^= uint32(docID[i])
+		h *= 16777619
+	}
+	return &e.shards[h%64]
+}
+
 func NewEngine() *Engine {
 	active := NewEmbedderFromEnv()
-	return &Engine{
+	e := &Engine{
 		Inverted:       NewInvertedIndex(),
 		Trie:           NewTrie(),
 		Vector:         NewVectorIndex(active.Dimensions()),
 		ActiveEmbedder: active,
-		DocTitles:      make(map[string]string),
-		DocURLs:        make(map[string]string),
-		DocBodies:      make(map[string]string),
 	}
+	for i := 0; i < 64; i++ {
+		e.shards[i].titles = make(map[string]string)
+		e.shards[i].urls = make(map[string]string)
+		e.shards[i].bodies = make(map[string]string)
+	}
+	return e
 }
 
 func NewIndexEngine() *Engine {
@@ -727,15 +772,21 @@ func (e *Engine) IndexDocument(url, title, cleanBody string, termPositions map[s
 func (e *Engine) IndexDocumentWithSource(url, title, cleanBody string, termPositions map[string][]int, totalTokens int, sourceType, sourceURL string) {
 	docID := url
 
-	e.mu.Lock()
-	e.DocTitles[docID] = title
-	e.DocURLs[docID] = url
-	e.DocBodies[docID] = cleanBody
-	e.mu.Unlock()
+	shard := e.getShard(docID)
+	shard.mu.Lock()
+	shard.titles[docID] = title
+	shard.urls[docID] = url
+	shard.bodies[docID] = cleanBody
+	shard.mu.Unlock()
 
-	e.Inverted.AddDocument(docID, termPositions, totalTokens)
+	e.mu.RLock()
+	inv := e.Inverted
+	trie := e.Trie
+	e.mu.RUnlock()
+
+	inv.AddDocument(docID, termPositions, totalTokens)
 	for term, positions := range termPositions {
-		e.Trie.Insert(term, len(positions))
+		trie.Insert(term, len(positions))
 	}
 	e.IndexDocumentVector(docID, title, cleanBody)
 
@@ -756,17 +807,22 @@ func (e *Engine) LoadFromDB(ctx context.Context) error {
 		return err
 	}
 
-	e.mu.Lock()
-	e.DocTitles = make(map[string]string)
-	e.DocURLs = make(map[string]string)
-	e.DocBodies = make(map[string]string)
-	e.Inverted = NewInvertedIndex()
-	e.Trie = NewTrie()
-	e.Vector = NewVectorIndex(e.ActiveEmbedder.Dimensions())
-	e.mu.Unlock()
+	var newShards [64]MetadataShard
+	for i := 0; i < 64; i++ {
+		newShards[i].titles = make(map[string]string)
+		newShards[i].urls = make(map[string]string)
+		newShards[i].bodies = make(map[string]string)
+	}
+
+	newInverted := NewInvertedIndex()
+	newTrie := NewTrie()
+	
+	e.mu.RLock()
+	dimensions := e.ActiveEmbedder.Dimensions()
+	e.mu.RUnlock()
+	newVector := NewVectorIndex(dimensions)
 
 	for _, d := range docs {
-		// Helper tokenization for DB hydration
 		rawTokens := strings.Fields(strings.ToLower(d.CleanBody))
 		termPositions := make(map[string][]int)
 		for idx, raw := range rawTokens {
@@ -778,18 +834,47 @@ func (e *Engine) LoadFromDB(ctx context.Context) error {
 			termPositions[stemmed] = append(termPositions[stemmed], idx)
 		}
 
-		e.mu.Lock()
-		e.DocTitles[d.URL] = d.Title
-		e.DocURLs[d.URL] = d.URL
-		e.DocBodies[d.URL] = d.CleanBody
-		e.mu.Unlock()
-
-		e.Inverted.AddDocument(d.URL, termPositions, d.TotalTokens)
-		for term, positions := range termPositions {
-			e.Trie.Insert(term, len(positions))
+		var h uint32 = 2166136261
+		for i := 0; i < len(d.URL); i++ {
+			h ^= uint32(d.URL[i])
+			h *= 16777619
 		}
-		e.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
+		shardIdx := h % 64
+
+		newShards[shardIdx].titles[d.URL] = d.Title
+		newShards[shardIdx].urls[d.URL] = d.URL
+		newShards[shardIdx].bodies[d.URL] = d.CleanBody
+
+		newInverted.AddDocument(d.URL, termPositions, d.TotalTokens)
+		for term, positions := range termPositions {
+			newTrie.Insert(term, len(positions))
+		}
+		
+		e.mu.RLock()
+		embedder := e.ActiveEmbedder
+		e.mu.RUnlock()
+		
+		if embedder != nil {
+			vec, err := embedder.Embed(context.Background(), d.Title+" "+d.CleanBody)
+			if err == nil && len(vec) > 0 {
+				_ = newVector.AddVector(d.URL, vec)
+			}
+		}
 	}
+
+	e.mu.Lock()
+	for i := 0; i < 64; i++ {
+		e.shards[i].mu.Lock()
+		e.shards[i].titles = newShards[i].titles
+		e.shards[i].urls = newShards[i].urls
+		e.shards[i].bodies = newShards[i].bodies
+		e.shards[i].mu.Unlock()
+	}
+	e.Inverted = newInverted
+	e.Trie = newTrie
+	e.Vector = newVector
+	e.mu.Unlock()
+
 	return nil
 }
 
@@ -829,15 +914,21 @@ func (e *Engine) IndexDocumentIncrementalByURL(ctx context.Context, targetURL st
 		termPositions[stemmed] = append(termPositions[stemmed], idx)
 	}
 
-	e.mu.Lock()
-	e.DocTitles[doc.URL] = doc.Title
-	e.DocURLs[doc.URL] = doc.URL
-	e.DocBodies[doc.URL] = doc.CleanBody
-	e.mu.Unlock()
+	shard := e.getShard(doc.URL)
+	shard.mu.Lock()
+	shard.titles[doc.URL] = doc.Title
+	shard.urls[doc.URL] = doc.URL
+	shard.bodies[doc.URL] = doc.CleanBody
+	shard.mu.Unlock()
 
-	e.Inverted.AddDocument(doc.URL, termPositions, doc.TotalTokens)
+	e.mu.RLock()
+	inv := e.Inverted
+	trie := e.Trie
+	e.mu.RUnlock()
+
+	inv.AddDocument(doc.URL, termPositions, doc.TotalTokens)
 	for term, positions := range termPositions {
-		e.Trie.Insert(term, len(positions))
+		trie.Insert(term, len(positions))
 	}
 	e.IndexDocumentVector(doc.URL, doc.Title, doc.CleanBody)
 
@@ -845,30 +936,32 @@ func (e *Engine) IndexDocumentIncrementalByURL(ctx context.Context, targetURL st
 }
 
 func (e *Engine) GetDocumentMetadata(docID string) (title, url, body string, exists bool) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	title, exists = e.DocTitles[docID]
-	url = e.DocURLs[docID]
-	body = e.DocBodies[docID]
+	shard := e.getShard(docID)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+	title, exists = shard.titles[docID]
+	url = shard.urls[docID]
+	body = shard.bodies[docID]
 	return
 }
 
 func (e *Engine) GetMetadataMaps() (titles, urls, bodies map[string]string) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	titles = make(map[string]string)
+	urls = make(map[string]string)
+	bodies = make(map[string]string)
 
-	titles = make(map[string]string, len(e.DocTitles))
-	urls = make(map[string]string, len(e.DocURLs))
-	bodies = make(map[string]string, len(e.DocBodies))
-
-	for k, v := range e.DocTitles {
-		titles[k] = v
-	}
-	for k, v := range e.DocURLs {
-		urls[k] = v
-	}
-	for k, v := range e.DocBodies {
-		bodies[k] = v
+	for i := 0; i < 64; i++ {
+		e.shards[i].mu.RLock()
+		for k, v := range e.shards[i].titles {
+			titles[k] = v
+		}
+		for k, v := range e.shards[i].urls {
+			urls[k] = v
+		}
+		for k, v := range e.shards[i].bodies {
+			bodies[k] = v
+		}
+		e.shards[i].mu.RUnlock()
 	}
 
 	return titles, urls, bodies
@@ -917,10 +1010,24 @@ func (e *Engine) LoadSnapshot(dataDir string) error {
 
 func (e *Engine) SearchBM25(query string, topK int) []SearchHit {
 	titles, urls, bodies := e.GetMetadataMaps()
-	return RankDocuments(query, e.Inverted, titles, urls, bodies, topK)
+	e.mu.RLock()
+	inv := e.Inverted
+	e.mu.RUnlock()
+	return RankDocuments(query, inv, titles, urls, bodies, topK)
 }
 
 func (e *Engine) SearchVector(query string, topK int) []VectorSearchResult {
-	queryVec := GenerateFeatureVector(query, 128)
-	return e.Vector.SearchNearest(queryVec, topK)
+	e.mu.RLock()
+	embedder := e.ActiveEmbedder
+	vectorIdx := e.Vector
+	e.mu.RUnlock()
+
+	if embedder == nil {
+		return nil
+	}
+	queryVec, err := embedder.Embed(context.Background(), query)
+	if err != nil || len(queryVec) == 0 {
+		return nil
+	}
+	return vectorIdx.SearchNearest(queryVec, topK)
 }

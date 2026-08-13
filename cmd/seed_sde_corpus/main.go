@@ -246,14 +246,14 @@ func main() {
 
 	fmt.Printf("\n🔍 Testing Hybrid RRF Search Across 1,000+ SDE Corpus Pages:\n")
 	for _, q := range testQueries {
-		// 1. Sparse BM25
-		bm25Hits := index.GlobalEngine.Inverted.RankDocuments(q, index.GlobalEngine.DocTitles, index.GlobalEngine.DocURLs, index.GlobalEngine.DocBodies, 10)
+		titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
+		bm25Hits := index.GlobalEngine.Inverted.RankDocuments(q, titles, urls, bodies, 10)
 
 		// 2. Dense Vector
 		vecHits := index.GlobalEngine.SearchVector(q, 10)
 
 		// 3. RRF Fusion
-		fused := search.ReciprocalRankFusion(bm25Hits, vecHits, 3)
+		fused := search.ReciprocalRankFusion(q, bm25Hits, vecHits, 3, titles, urls, bodies)
 
 		fmt.Printf("\n  Query: '%s' -> Top Hits:\n", q)
 		for i, hit := range fused {

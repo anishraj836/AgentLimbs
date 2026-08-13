@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +20,62 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+var mediaExtensions = map[string]bool{
+	// Images
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".svg": true, ".webp": true, ".ico": true, ".bmp": true,
+	".tiff": true, ".tif": true, ".avif": true, ".heic": true,
+	// Video & Audio
+	".mp4": true, ".webm": true, ".mkv": true, ".avi": true,
+	".mov": true, ".wmv": true, ".flv": true, ".m4v": true,
+	".mp3": true, ".wav": true, ".ogg": true, ".m4a": true,
+	".flac": true, ".aac": true, ".opus": true, ".wma": true,
+	// Fonts
+	".ttf": true, ".woff": true, ".woff2": true, ".eot": true, ".otf": true,
+}
+
+// IsMediaResourceURL checks if a target URL points to an image, video, audio, or font resource.
+// Core web pages, CSS (.css), JavaScript (.js, .mjs), and JSON (.json) return false (not blocked).
+func IsMediaResourceURL(targetURL string) bool {
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		return false
+	}
+	path := u.Path
+	if idx := strings.Index(path, ";"); idx >= 0 {
+		path = path[:idx]
+	}
+	path = strings.TrimRight(path, "/")
+	ext := filepath.Ext(strings.ToLower(path))
+	if ext == "" {
+		return false
+	}
+	return mediaExtensions[ext]
+}
+
 // Private IP Checking
 
-// IsPrivateIP checks if an IP is loopback, private RFC1918, link-local metadata, or IPv6 private.
+func getIPFromAddr(addr net.Addr) net.IP {
+	if addr == nil {
+		return nil
+	}
+	switch v := addr.(type) {
+	case *net.TCPAddr:
+		return v.IP
+	case *net.UDPAddr:
+		return v.IP
+	case *net.IPAddr:
+		return v.IP
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err == nil {
+			return net.ParseIP(host)
+		}
+		return net.ParseIP(addr.String())
+	}
+}
+
+// IsPrivateIP checks if an IP is loopback, private RFC1918, CGNAT, link-local metadata, or IPv6 private.
 func IsPrivateIP(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -29,21 +83,40 @@ func IsPrivateIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 		return true
 	}
-	// Check IPv4 private ranges
 	if ip4 := ip.To4(); ip4 != nil {
 		switch {
+		case ip4[0] == 0: // 0.0.0.0/8
+			return true
 		case ip4[0] == 10: // 10.0.0.0/8
+			return true
+		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // 100.64.0.0/10 CGNAT
+			return true
+		case ip4[0] == 127: // 127.0.0.0/8 Loopback
+			return true
+		case ip4[0] == 169 && ip4[1] == 254: // 169.254.0.0/16 Link-local / AWS metadata
 			return true
 		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31: // 172.16.0.0/12
 			return true
 		case ip4[0] == 192 && ip4[1] == 168: // 192.168.0.0/16
 			return true
-		case ip4[0] == 169 && ip4[1] == 254: // 169.254.0.0/16 AWS/GCP metadata
+		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2: // TEST-NET-1
+			return true
+		case ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100: // TEST-NET-2
+			return true
+		case ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113: // TEST-NET-3
+			return true
+		case ip4[0] >= 224: // Multicast / Reserved (224.0.0.0/4)
 			return true
 		}
 	} else if len(ip) == net.IPv6len {
-		// IPv6 unique local addresses (fc00::/7)
-		if ip[0] == 0xfc || ip[0] == 0xfd {
+		switch {
+		case ip[0] == 0xfc || ip[0] == 0xfd: // fc00::/7 ULA
+			return true
+		case ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8: // 2001:db8::/32 Documentation
+			return true
+		case ip[0] == 0x01 && ip[1] == 0x00 && ip[2] == 0 && ip[3] == 0 && ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0: // 100::/64 Discard
+			return true
+		case ip[0] == 0x20 && ip[1] == 0x02: // 2002::/16 6to4
 			return true
 		}
 	}
@@ -340,6 +413,8 @@ func IsAllowed(userAgent, targetURL string) bool {
 type Client struct {
 	client                  *http.Client
 	allowLoopbackForTesting bool
+	ProxyManager            ProxyRotator
+	RenderEngine            HeadlessRenderer
 }
 
 type FetchResult struct {
@@ -360,8 +435,13 @@ func NewTestClient(allowLoopback bool) *Client {
 }
 
 func NewTestClientWithTransport(tr http.RoundTripper, allowLoopback bool) *Client {
+	pm, _ := NewMultiTierProxyManager(nil, nil)
+	pm.AllowLoopback = allowLoopback
+
 	c := &Client{
 		allowLoopbackForTesting: allowLoopback,
+		ProxyManager:            pm,
+		RenderEngine:            NewFallbackRenderEngine("chrome"),
 	}
 
 	if tr == nil {
@@ -393,9 +473,26 @@ func NewTestClientWithTransport(tr http.RoundTripper, allowLoopback bool) *Clien
 					}
 				}
 
-				return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+				if err != nil {
+					return nil, err
+				}
+
+				if !c.allowLoopbackForTesting {
+					remoteIP := getIPFromAddr(conn.RemoteAddr())
+					if IsPrivateIP(remoteIP) {
+						conn.Close()
+						return nil, fmt.Errorf("post-dial blocked request to private/internal IP: %s (%s)", remoteIP.String(), host)
+					}
+				}
+
+				return conn, nil
 			},
 		}
+	}
+
+	if c.ProxyManager != nil {
+		tr = c.ProxyManager.WrapTransport(tr)
 	}
 
 	c.client = &http.Client{
@@ -404,6 +501,24 @@ func NewTestClientWithTransport(tr http.RoundTripper, allowLoopback bool) *Clien
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects (>10)")
+			}
+			if req.URL == nil || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
+				return fmt.Errorf("blocked redirect to unsupported scheme: %s", req.URL.Scheme)
+			}
+			if !c.allowLoopbackForTesting {
+				host := req.URL.Hostname()
+				if ip := net.ParseIP(host); ip != nil && IsPrivateIP(ip) {
+					return fmt.Errorf("blocked redirect to private IP host: %s", host)
+				}
+			}
+			if len(via) > 0 {
+				prevHost := via[len(via)-1].URL.Hostname()
+				currHost := req.URL.Hostname()
+				if !strings.EqualFold(prevHost, currHost) {
+					req.Header.Del("Cookie")
+					req.Header.Del("Cookie2")
+					req.Header.Del("Authorization")
+				}
 			}
 			return nil
 		},
@@ -427,7 +542,30 @@ func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
 		}
 		req.Header.Set("User-Agent", "AntigravityBot/1.0 (+https://example.com/bot)")
 
-		resp, err := c.client.Do(req)
+		robotsClient := &http.Client{
+			Transport: c.client.Transport,
+			Timeout:   5 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return http.ErrUseLastResponse
+				}
+				if len(via) > 0 {
+					prevHost := via[len(via)-1].URL.Hostname()
+					currHost := req.URL.Hostname()
+					if !strings.EqualFold(prevHost, currHost) {
+						req.Header.Del("Cookie")
+						req.Header.Del("Cookie2")
+						req.Header.Del("Authorization")
+					}
+					if req.URL.Host == via[0].URL.Host {
+						return nil
+					}
+				}
+				return http.ErrUseLastResponse
+			},
+		}
+
+		resp, err := robotsClient.Do(req)
 		if err != nil {
 			return "", nil
 		}
@@ -450,6 +588,10 @@ func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
 }
 
 func (c *Client) Fetch(ctx context.Context, targetURL string) (*FetchResult, error) {
+	if IsMediaResourceURL(targetURL) {
+		return nil, fmt.Errorf("blocked media resource URL: %s", targetURL)
+	}
+
 	var lastErr error
 	maxRetries := 3
 	backoff := 1 * time.Second
@@ -585,10 +727,29 @@ func (c *Client) FetchSmart(ctx context.Context, targetURL string, forceJS bool)
 			htmlBytes, readErr := io.ReadAll(limitedBody)
 			res.Response.Body.Close()
 
-			if readErr == nil && !DetectJSShell(htmlBytes) {
-				res.Response.Body = io.NopCloser(bytes.NewReader(htmlBytes))
-				return res, nil
+			if readErr == nil {
+				htmlStr := string(htmlBytes)
+				if !IsSPAPlaceholder(htmlStr) {
+					res.Response.Body = io.NopCloser(bytes.NewReader(htmlBytes))
+					return res, nil
+				}
 			}
+		}
+	}
+
+	if c.RenderEngine != nil {
+		renderedHTML, renderErr := c.RenderEngine.RenderSPA(ctx, targetURL)
+		if renderErr == nil {
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(renderedHTML)),
+			}
+			resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+			return &FetchResult{
+				Response: resp,
+				FinalURL: targetURL,
+			}, nil
 		}
 	}
 

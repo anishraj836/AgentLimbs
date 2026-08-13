@@ -4,11 +4,17 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
+	"github.com/crawler-monorepo/common/config"
 	"github.com/crawler-monorepo/common/kafka"
 	"github.com/crawler-monorepo/common/logger"
+	appMiddleware "github.com/crawler-monorepo/common/middleware"
 	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/common/redis"
 	"github.com/crawler-monorepo/internal/storage"
 	"github.com/crawler-monorepo/search-service/api"
 	"github.com/go-chi/chi/v5"
@@ -20,7 +26,16 @@ func main() {
 	logger.InitLogger(os.Getenv("ENV"))
 	defer logger.Sync()
 
+	if _, err := config.LoadAndValidate(); err != nil {
+		logger.Log.Fatal("Configuration validation error", zap.Error(err))
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	storage.InitDB(os.Getenv("DATABASE_URL"))
+	defer storage.CloseDB()
+	defer redis.CloseRedis()
 	if err := index.GlobalEngine.LoadFromDB(context.Background()); err != nil {
 		logger.Log.Info("No existing persisted corpus loaded from DB", zap.Error(err))
 	}
@@ -38,10 +53,13 @@ func main() {
 		defer consumer.Close()
 
 		go func() {
-			ctx := context.Background()
 			for {
 				msg, err := consumer.ReadMessage(ctx)
 				if err != nil {
+					if ctx.Err() != nil {
+						logger.Log.Info("Kafka consumer shutting down")
+						break
+					}
 					logger.Log.Error("Failed to read index_updates message", zap.Error(err))
 					continue
 				}
@@ -71,6 +89,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(appMiddleware.RequestIDMiddleware)
 
 	r.Post("/search", handler.Search)
 	r.Get("/search", handler.Search)
@@ -87,8 +106,29 @@ func main() {
 	}
 
 	logger.Log.Info("Search Service listening on port " + port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
-		logger.Log.Fatal("Search Service failed", zap.Error(err))
+	
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           r,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Log.Fatal("Search Service failed", zap.Error(err))
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Log.Info("Shutting down Search Service gracefully...")
+	
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Log.Error("Search Service forced to shutdown", zap.Error(err))
 	}
 }
-

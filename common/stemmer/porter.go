@@ -102,11 +102,12 @@ func (s *porterStemmer) cvc(i int) bool {
 }
 
 func (s *porterStemmer) ends(str string) bool {
-	l := len(str)
-	if s.i < 0 || s.i >= len(s.b) || l > s.i+1 {
+	targetRunes := []rune(str)
+	l := len(targetRunes)
+	if s.i < 0 || s.i >= len(s.b) || l > s.i+1 || s.i-l+1 < 0 {
 		return false
 	}
-	if str[l-1] != byte(s.b[s.i]) {
+	if s.b[s.i] != targetRunes[l-1] {
 		return false
 	}
 	if string(s.b[s.i-l+1:s.i+1]) != str {
@@ -173,7 +174,7 @@ func (s *porterStemmer) step2() {
 }
 
 func (s *porterStemmer) step3() {
-	if s.i == 0 {
+	if s.i <= 0 {
 		return
 	}
 	switch s.b[s.i-1] {
@@ -262,7 +263,7 @@ func (s *porterStemmer) step4() {
 }
 
 func (s *porterStemmer) step5() {
-	if s.i == 0 {
+	if s.i <= 0 {
 		return
 	}
 	switch s.b[s.i-1] {
@@ -297,7 +298,7 @@ func (s *porterStemmer) step5() {
 			return
 		}
 	case 'o':
-		if s.ends("ion") && (s.b[s.j] == 's' || s.b[s.j] == 't') {
+		if s.ends("ion") && s.j >= 0 && (s.b[s.j] == 's' || s.b[s.j] == 't') {
 		} else if s.ends("ou") {
 		} else {
 			return
@@ -337,13 +338,16 @@ func (s *porterStemmer) step5() {
 
 func (s *porterStemmer) step6() {
 	s.j = s.i
+	if s.i < 0 {
+		return
+	}
 	if s.b[s.i] == 'e' {
 		a := s.m()
 		if a > 1 || (a == 1 && !s.cvc(s.i-1)) {
 			s.i--
 		}
 	}
-	if s.b[s.i] == 'l' && s.doubleC(s.i) && s.m() > 1 {
+	if s.i >= 0 && s.b[s.i] == 'l' && s.doubleC(s.i) && s.m() > 1 {
 		s.i--
 	}
 }
@@ -355,9 +359,10 @@ func Stem(word string) string {
 		return word
 	}
 
+	runes := []rune(word)
 	s := &porterStemmer{
-		b: []rune(word),
-		i: len(word) - 1,
+		b: runes,
+		i: len(runes) - 1,
 	}
 
 	if s.i < 0 || s.i >= len(s.b) {

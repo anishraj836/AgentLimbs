@@ -15,20 +15,44 @@ type URL struct {
 	LastMod string `xml:"lastmod"`
 }
 
-// ParseSitemapXML parses sitemap.xml bytes and returns all canonical URLs.
+type SitemapIndex struct {
+	XMLName  xml.Name     `xml:"sitemapindex"`
+	Sitemaps []SitemapLoc `xml:"sitemap"`
+}
+
+type SitemapLoc struct {
+	Loc string `xml:"loc"`
+}
+
+// ParseSitemapXML parses sitemap.xml bytes and returns all canonical URLs or child sitemap URLs.
 func ParseSitemapXML(xmlBytes []byte) ([]string, error) {
 	var urlset URLSet
-	if err := xml.Unmarshal(xmlBytes, &urlset); err != nil {
-		return nil, err
-	}
-
-	var urls []string
-	for _, u := range urlset.URLs {
-		loc := strings.TrimSpace(u.Loc)
-		if loc != "" {
-			urls = append(urls, loc)
+	if err := xml.Unmarshal(xmlBytes, &urlset); err == nil && len(urlset.URLs) > 0 {
+		var urls []string
+		for _, u := range urlset.URLs {
+			loc := strings.TrimSpace(u.Loc)
+			if loc != "" {
+				urls = append(urls, loc)
+			}
+		}
+		if len(urls) > 0 {
+			return urls, nil
 		}
 	}
 
-	return urls, nil
+	var sitemapIndex SitemapIndex
+	if err := xml.Unmarshal(xmlBytes, &sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
+		var urls []string
+		for _, s := range sitemapIndex.Sitemaps {
+			loc := strings.TrimSpace(s.Loc)
+			if loc != "" {
+				urls = append(urls, loc)
+			}
+		}
+		if len(urls) > 0 {
+			return urls, nil
+		}
+	}
+
+	return nil, nil
 }

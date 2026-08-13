@@ -42,4 +42,67 @@ func TestMCPProtocolInitializeAndList(t *testing.T) {
 	if len(listResp.Result.Tools) < 2 {
 		t.Fatalf("expected at least 2 MCP tools registered, got %d", len(listResp.Result.Tools))
 	}
+
+	foundHybridSearch := false
+	for _, tool := range listResp.Result.Tools {
+		if tool.Name == "agent_limbs_hybrid_search" {
+			foundHybridSearch = true
+			limitProp, exists := tool.InputSchema.Properties["limit"]
+			if !exists {
+				t.Fatalf("expected 'limit' property in agent_limbs_hybrid_search schema")
+			}
+			if limitProp.Type != "integer" {
+				t.Fatalf("expected 'limit' property type to be 'integer', got '%s'", limitProp.Type)
+			}
+		}
+	}
+	if !foundHybridSearch {
+		t.Fatalf("agent_limbs_hybrid_search tool not found in list")
+	}
+}
+
+func TestMCPHybridSearchLimit(t *testing.T) {
+	// Test calling agent_limbs_hybrid_search with different limit formats (omitted, integer, string)
+	tests := []struct {
+		name string
+		req  string
+	}{
+		{
+			name: "Omitted limit (default 5)",
+			req:  `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent_limbs_hybrid_search","arguments":{"query":"golang"}}}`,
+		},
+		{
+			name: "Integer limit",
+			req:  `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"agent_limbs_hybrid_search","arguments":{"query":"golang","limit":3}}}`,
+		},
+		{
+			name: "String limit",
+			req:  `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agent_limbs_hybrid_search","arguments":{"query":"golang","limit":"2"}}}`,
+		},
+		{
+			name: "Large limit capped at 100",
+			req:  `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"agent_limbs_hybrid_search","arguments":{"query":"golang","limit":500}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			respBytes, err := HandleRPCMessage([]byte(tt.req), nil)
+			if err != nil {
+				t.Fatalf("HandleRPCMessage failed: %v", err)
+			}
+
+			var resp struct {
+				JSONRPC string         `json:"jsonrpc"`
+				ID      int            `json:"id"`
+				Result  CallToolResult `json:"result"`
+			}
+			if err := json.Unmarshal(respBytes, &resp); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+			if resp.Result.IsError {
+				t.Fatalf("unexpected tool call error: %v", resp.Result.Content)
+			}
+		})
+	}
 }

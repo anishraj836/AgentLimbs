@@ -22,3 +22,10 @@ func InitRedis(addr string, password string, db int) {
 		panic("Failed to connect to Redis: " + err.Error())
 	}
 }
+
+func CloseRedis() error {
+	if Client != nil {
+		return Client.Close()
+	}
+	return nil
+}

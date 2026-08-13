@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/crawler-monorepo/common/stemmer"
+	"github.com/crawler-monorepo/common/stopwords"
 	"github.com/crawler-monorepo/common/utils"
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
@@ -49,18 +53,40 @@ func ClampTTL(llmTTL int) (time.Duration, bool) {
 	return time.Duration(llmTTL) * time.Second, true
 }
 
+func getSubnet(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return fmt.Sprintf("%d.%d.%d.0/24", ip4[0], ip4[1], ip4[2])
+	}
+	if len(ip) == net.IPv6len {
+		return fmt.Sprintf("%x:%x:%x:%x::/64",
+			uint16(ip[0])<<8|uint16(ip[1]),
+			uint16(ip[2])<<8|uint16(ip[3]),
+			uint16(ip[4])<<8|uint16(ip[5]),
+			uint16(ip[6])<<8|uint16(ip[7]))
+	}
+	return ipStr
+}
+
 type RateLimiter struct {
-	mu        sync.Mutex
-	requests  map[string]int
-	lastReset time.Time
-	maxReqs   int
+	mu           sync.Mutex
+	requests     map[string]int
+	subnetReqs   map[string]int
+	lastReset    time.Time
+	maxReqs      int
+	maxSubnetReq int
 }
 
 func NewRateLimiter(maxReqsPerMin int) *RateLimiter {
 	return &RateLimiter{
-		requests:  make(map[string]int),
-		lastReset: time.Now(),
-		maxReqs:   maxReqsPerMin,
+		requests:     make(map[string]int),
+		subnetReqs:   make(map[string]int),
+		lastReset:    time.Now(),
+		maxReqs:      maxReqsPerMin,
+		maxSubnetReq: maxReqsPerMin * 5,
 	}
 }
 
@@ -70,13 +96,27 @@ func (rl *RateLimiter) Allow(ip string) bool {
 
 	if time.Since(rl.lastReset) > time.Minute {
 		rl.requests = make(map[string]int)
+		rl.subnetReqs = make(map[string]int)
 		rl.lastReset = time.Now()
+	}
+
+	subnet := getSubnet(ip)
+
+	if len(rl.requests) > 10000 {
+		if rl.subnetReqs[subnet] >= rl.maxSubnetReq {
+			return false
+		}
 	}
 
 	if rl.requests[ip] >= rl.maxReqs {
 		return false
 	}
+	if rl.subnetReqs[subnet] >= rl.maxSubnetReq {
+		return false
+	}
+
 	rl.requests[ip]++
+	rl.subnetReqs[subnet]++
 	return true
 }
 
@@ -127,16 +167,25 @@ func isTrustedProxy(ipStr string) bool {
 
 func GetClientIP(r *http.Request) string {
 	remoteIP := parseIP(r.RemoteAddr)
-
-	if !isTrustedProxy(remoteIP) {
-		if remoteIP != "" {
-			return remoteIP
-		}
-		return r.RemoteAddr
+	if remoteIP == "" {
+		remoteIP = r.RemoteAddr
 	}
 
+	// Untrusted host early exit
+	if !isTrustedProxy(remoteIP) {
+		return remoteIP
+	}
+
+	// Right-to-left XFF parsing for trusted proxies
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for _, part := range strings.Split(xff, ",") {
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := parseIP(parts[i])
+			if ip != "" && !isTrustedProxy(ip) {
+				return ip
+			}
+		}
+		for _, part := range parts {
 			if ip := parseIP(part); ip != "" {
 				return ip
 			}
@@ -149,10 +198,7 @@ func GetClientIP(r *http.Request) string {
 		}
 	}
 
-	if remoteIP != "" {
-		return remoteIP
-	}
-	return r.RemoteAddr
+	return remoteIP
 }
 
 func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Handler) http.Handler {
@@ -167,6 +213,10 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 				return
 			}
 
+			if r.Method == http.MethodPost || r.Method == http.MethodPut {
+				r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
+			}
+
 			ip := GetClientIP(r)
 
 			if !limiter.Allow(ip) {
@@ -174,12 +224,17 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 				return
 			}
 
-			if apiKey != "" || mode == "cloud" {
+			if mode == "cloud" && apiKey == "" {
+				http.Error(w, `{"error":"Unauthorized: Cloud mode requires non-empty server API key"}`, http.StatusUnauthorized)
+				return
+			}
+
+			if apiKey != "" {
 				clientKey := r.Header.Get("X-API-Key")
 				if clientKey == "" {
 					clientKey = r.URL.Query().Get("api_key")
 				}
-				if apiKey == "" || clientKey != apiKey {
+				if clientKey == "" || subtle.ConstantTimeCompare([]byte(clientKey), []byte(apiKey)) != 1 {
 					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header"}`, http.StatusUnauthorized)
 					return
 				}
@@ -192,16 +247,19 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 
 type AgentHandler struct {
 	httpClient *crawler.Client
+	scrapeSem  chan struct{}
 }
 
 func NewAgentHandler() *AgentHandler {
 	return &AgentHandler{
 		httpClient: crawler.NewClient(),
+		scrapeSem:  make(chan struct{}, 20),
 	}
 }
 
 type ScrapeRequest struct {
 	URL        string `json:"url"`
+	Mode       string `json:"mode,omitempty"`
 	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 }
 
@@ -214,6 +272,16 @@ type ScrapeResponse struct {
 }
 
 func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
+	if h.scrapeSem != nil {
+		select {
+		case h.scrapeSem <- struct{}{}:
+			defer func() { <-h.scrapeSem }()
+		default:
+			http.Error(w, `{"error":"Scrape worker pool capacity reached (20 active workers)"}`, http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	t0 := time.Now()
 	var req ScrapeRequest
 
@@ -224,9 +292,18 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		req.URL = r.URL.Query().Get("url")
+		req.Mode = r.URL.Query().Get("mode")
 		if ttlStr := r.URL.Query().Get("ttl_seconds"); ttlStr != "" {
 			req.TTLSeconds, _ = strconv.Atoi(ttlStr)
 		}
+	}
+
+	if req.Mode == "" {
+		req.Mode = "clean_rag"
+	}
+	if req.Mode != "clean_rag" && req.Mode != "preserve_links" && req.Mode != "raw" {
+		http.Error(w, `{"error":"Invalid mode. Allowed values: clean_rag, preserve_links, raw"}`, http.StatusBadRequest)
+		return
 	}
 
 	if req.URL == "" {
@@ -257,11 +334,23 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes, "clean_rag")
+	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes, req.Mode)
 
 	cleanDoc, _ := extractor.ProcessRawHTML(result.FinalURL, htmlBytes)
 	if cleanDoc != nil {
-		index.GlobalEngine.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+		rawTokens := strings.Fields(strings.ToLower(cleanDoc.Body))
+		termPositions := make(map[string][]int)
+		for idx, raw := range rawTokens {
+			clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
+			if clean == "" || stopwords.IsStopword(clean) {
+				continue
+			}
+			stemmed := stemmer.Stem(clean)
+			termPositions[stemmed] = append(termPositions[stemmed], idx)
+		}
+
+		index.GlobalEngine.IndexDocumentWithSource(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body, termPositions, tokens, "web_crawled", cleanDoc.URL)
+
 		if ttlDuration, hasTTL := ClampTTL(req.TTLSeconds); hasTTL {
 			_ = storage.SaveCrawledDocumentWithTTL(
 				r.Context(),
@@ -272,16 +361,6 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 				"web_crawled",
 				cleanDoc.URL,
 				ttlDuration,
-			)
-		} else {
-			_ = storage.SaveCrawledDocument(
-				r.Context(),
-				cleanDoc.URL,
-				cleanDoc.Title,
-				cleanDoc.Body,
-				tokens,
-				"web_crawled",
-				cleanDoc.URL,
 			)
 		}
 	}
@@ -317,6 +396,9 @@ func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
 	if req.TopK <= 0 {
 		req.TopK = 5
 	}
+	if req.TopK > 100 {
+		req.TopK = 100
+	}
 
 	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
 	bm25Hits := index.RankDocuments(
@@ -330,7 +412,7 @@ func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
 
 	vecHits := index.GlobalEngine.SearchVector(req.Query, req.TopK*2)
 
-	fusedHits := search.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
+	fusedHits := search.ReciprocalRankFusion(req.Query, bm25Hits, vecHits, req.TopK, titles, urls, bodies)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 

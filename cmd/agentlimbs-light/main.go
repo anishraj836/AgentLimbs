@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,11 +11,18 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/crawler-monorepo/agent-service/api"
+	"github.com/crawler-monorepo/common/config"
 	"github.com/crawler-monorepo/common/logger"
+	appMiddleware "github.com/crawler-monorepo/common/middleware"
+	"github.com/crawler-monorepo/common/ratelimit"
+	"github.com/crawler-monorepo/common/stemmer"
+	"github.com/crawler-monorepo/common/stopwords"
 	"github.com/crawler-monorepo/common/utils"
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
@@ -25,6 +33,50 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 )
+
+var (
+	saveTriggerChan = make(chan string, 100)
+	saveTriggerOnce sync.Once
+)
+
+func triggerDebouncedSave(dataDir string) {
+	saveTriggerOnce.Do(func() {
+		go func() {
+			var timer *time.Timer
+			var latestDir string
+			for {
+				select {
+				case dir, ok := <-saveTriggerChan:
+					if !ok {
+						return
+					}
+					latestDir = dir
+					if timer == nil {
+						timer = time.NewTimer(300 * time.Millisecond)
+					} else {
+						timer.Reset(300 * time.Millisecond)
+					}
+				case <-func() <-chan time.Time {
+					if timer == nil {
+						return nil
+					}
+					return timer.C
+				}():
+					if latestDir != "" {
+						saveStorage(latestDir)
+						latestDir = ""
+					}
+					timer = nil
+				}
+			}
+		}()
+	})
+
+	select {
+	case saveTriggerChan <- dataDir:
+	default:
+	}
+}
 
 type EmbeddedServer struct {
 	httpClient *crawler.Client
@@ -77,6 +129,7 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 	var req ScrapeRequest
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, `{"error":"Invalid JSON body"}`, http.StatusBadRequest)
 			return
@@ -91,6 +144,14 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.URL == "" {
 		http.Error(w, `{"error":"URL parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.Mode == "" {
+		req.Mode = "clean_rag"
+	}
+	if req.Mode != "clean_rag" && req.Mode != "preserve_links" && req.Mode != "raw" {
+		http.Error(w, `{"error":"Invalid mode parameter"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -122,7 +183,19 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	cleanDoc, _ := extractor.ProcessRawHTML(res.FinalURL, htmlBytes)
 	if cleanDoc != nil {
-		index.GlobalEngine.IndexDocumentVector(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body)
+		rawTokens := strings.Fields(strings.ToLower(cleanDoc.Body))
+		termPositions := make(map[string][]int)
+		for idx, raw := range rawTokens {
+			clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
+			if clean == "" || stopwords.IsStopword(clean) {
+				continue
+			}
+			stemmed := stemmer.Stem(clean)
+			termPositions[stemmed] = append(termPositions[stemmed], idx)
+		}
+
+		index.GlobalEngine.IndexDocumentWithSource(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body, termPositions, tokens, "embedded_scraped", res.FinalURL)
+
 		if ttlDuration, hasTTL := api.ClampTTL(req.TTLSeconds); hasTTL {
 			_ = storage.SaveCrawledDocumentWithTTL(
 				r.Context(),
@@ -134,20 +207,10 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 				res.FinalURL,
 				ttlDuration,
 			)
-		} else {
-			_ = storage.SaveCrawledDocument(
-				r.Context(),
-				cleanDoc.URL,
-				cleanDoc.Title,
-				cleanDoc.Body,
-				tokens,
-				"embedded_scraped",
-				res.FinalURL,
-			)
 		}
 	}
 
-	saveStorage(s.dataDir)
+	triggerDebouncedSave(s.dataDir)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 
@@ -179,6 +242,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	var req SearchRequest
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 		json.NewDecoder(r.Body).Decode(&req)
 	} else {
 		req.Query = r.URL.Query().Get("q")
@@ -190,6 +254,9 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.TopK <= 0 {
 		req.TopK = 5
+	}
+	if req.TopK > 100 {
+		req.TopK = 100
 	}
 
 	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
@@ -204,7 +271,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	vecHits := index.GlobalEngine.SearchVector(req.Query, req.TopK*2)
 
-	fusedHits := search.ReciprocalRankFusion(bm25Hits, vecHits, req.TopK)
+	fusedHits := search.ReciprocalRankFusion(req.Query, bm25Hits, vecHits, req.TopK, titles, urls, bodies)
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 
@@ -224,9 +291,15 @@ func SecurityMiddleware(next http.Handler) http.Handler {
 		if expectedKey != "" {
 			apiKey := r.Header.Get("X-API-Key")
 			if apiKey == "" {
+				authHeader := r.Header.Get("Authorization")
+				if strings.HasPrefix(authHeader, "Bearer ") {
+					apiKey = strings.TrimPrefix(authHeader, "Bearer ")
+				}
+			}
+			if apiKey == "" {
 				apiKey = r.URL.Query().Get("api_key")
 			}
-			if apiKey != expectedKey {
+			if apiKey == "" || subtle.ConstantTimeCompare([]byte(apiKey), []byte(expectedKey)) != 1 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
@@ -237,19 +310,51 @@ func SecurityMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+type AutocompleteResponse struct {
+	Prefix      string                     `json:"prefix"`
+	Suggestions []index.AutocompleteResult `json:"suggestions"`
+}
+
+func (s *EmbeddedServer) AutocompleteHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 5
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	results := index.GlobalEngine.Trie.SearchPrefix(q, limit)
+	if results == nil {
+		results = make([]index.AutocompleteResult, 0)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(AutocompleteResponse{
+		Prefix:      q,
+		Suggestions: results,
+	})
+}
+
 func (s *EmbeddedServer) SetupRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(appMiddleware.RequestIDMiddleware)
 
 	r.Get("/health", s.HealthHandler)
 
 	r.Group(func(r chi.Router) {
 		r.Use(SecurityMiddleware)
+		r.Use(ratelimit.RateLimiterMiddleware(50.0, 100.0))
 		r.Post("/v1/scrape", s.ScrapeHandler)
 		r.Get("/v1/scrape", s.ScrapeHandler)
 		r.Post("/v1/search", s.SearchHandler)
 		r.Get("/v1/search", s.SearchHandler)
+		r.Get("/v1/autocomplete", s.AutocompleteHandler)
 	})
 
 	return r
@@ -288,7 +393,17 @@ func initStorage(dataDir string) {
 	docs, err := storage.GetCrawledDocuments(context.Background())
 	if err == nil && len(docs) > 0 {
 		for _, d := range docs {
-			index.GlobalEngine.IndexDocumentVector(d.URL, d.Title, d.CleanBody)
+			rawTokens := strings.Fields(strings.ToLower(d.CleanBody))
+			termPositions := make(map[string][]int)
+			for idx, raw := range rawTokens {
+				clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
+				if clean == "" || stopwords.IsStopword(clean) {
+					continue
+				}
+				stemmed := stemmer.Stem(clean)
+				termPositions[stemmed] = append(termPositions[stemmed], idx)
+			}
+			index.GlobalEngine.IndexDocumentWithSource(d.URL, d.Title, d.CleanBody, termPositions, d.TotalTokens, d.SourceType, d.SourceURL)
 		}
 		logger.Log.Info(fmt.Sprintf("Hydrated %d documents into memory from file fallback", len(docs)))
 	}
@@ -314,6 +429,10 @@ func main() {
 	logger.InitLogger(os.Getenv("ENV"))
 	defer logger.Sync()
 
+	if _, err := config.LoadAndValidate(); err != nil {
+		logger.Log.Fatal("Configuration validation error", zap.Error(err))
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -330,8 +449,12 @@ func main() {
 	router := server.SetupRouter()
 
 	httpServer := &http.Server{
-		Addr:    ":" + port,
-		Handler: router,
+		Addr:              ":" + port,
+		Handler:           router,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	logger.Log.Info("AgentLimbs Light Single-Binary Server starting on port " + port)

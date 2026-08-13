@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
+	"time"
 
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
@@ -45,8 +47,12 @@ type ToolSchema struct {
 }
 
 type Property struct {
-	Type        string `json:"type"`
-	Description string `json:"description"`
+	Type        string              `json:"type"`
+	Description string              `json:"description,omitempty"`
+	Enum        []string            `json:"enum,omitempty"`
+	Default     interface{}         `json:"default,omitempty"`
+	Items       *Property           `json:"items,omitempty"`
+	Properties  map[string]Property `json:"properties,omitempty"`
 }
 
 type CallToolParams struct {
@@ -96,7 +102,9 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 				InputSchema: ToolSchema{
 					Type: "object",
 					Properties: map[string]Property{
-						"url": {Type: "string", Description: "Target URL to scrape"},
+						"url":         {Type: "string", Description: "Target URL to scrape"},
+						"mode":        {Type: "string", Description: "Extraction mode", Enum: []string{"clean_rag", "preserve_links", "raw"}},
+						"ttl_seconds": {Type: "integer", Description: "Time to live for the scraped document in seconds"},
 					},
 					Required: []string{"url"},
 				},
@@ -108,7 +116,7 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 					Type: "object",
 					Properties: map[string]Property{
 						"query": {Type: "string", Description: "Search query"},
-						"limit": {Type: "string", Description: "Maximum results count"},
+						"limit": {Type: "integer", Description: "Maximum results count"},
 					},
 					Required: []string{"query"},
 				},
@@ -151,17 +159,37 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 				break
 			}
 
-			bodyBytes, err := io.ReadAll(res.Response.Body)
+			bodyBytes, err := io.ReadAll(io.LimitReader(res.Response.Body, 10*1024*1024))
 			res.Response.Body.Close()
 			if err != nil {
 				toolResult = CallToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Failed to read body: %v", err)}}}
 				break
 			}
 
-			markdownContent, _, title := extractor.ConvertHTMLToMarkdown(targetURL, bodyBytes, "clean_rag")
+			mode := "clean_rag"
+			if m, ok := params.Arguments["mode"].(string); ok && m != "" {
+				mode = m
+			}
+
+			ttlSeconds := 0
+			if val, ok := params.Arguments["ttl_seconds"]; ok && val != nil {
+				switch v := val.(type) {
+				case float64:
+					ttlSeconds = int(v)
+				case int:
+					ttlSeconds = v
+				case string:
+					if parsed, err := strconv.Atoi(v); err == nil {
+						ttlSeconds = parsed
+					}
+				}
+			}
+
+			markdownContent, _, title := extractor.ConvertHTMLToMarkdown(targetURL, bodyBytes, mode)
 
 			totalTokens := len(markdownContent) / 4
-			_ = storage.SaveCrawledDocument(ctx, res.FinalURL, title, markdownContent, totalTokens, "mcp_scraped", targetURL)
+			ttlDuration := time.Duration(ttlSeconds) * time.Second
+			_ = storage.SaveCrawledDocumentWithTTL(ctx, res.FinalURL, title, markdownContent, totalTokens, "mcp_scraped", targetURL, ttlDuration)
 			_ = index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, res.FinalURL)
 
 			toolResult = CallToolResult{
@@ -177,15 +205,55 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 				break
 			}
 
+			limit := 5
+			if val, ok := params.Arguments["limit"]; ok && val != nil {
+				switch v := val.(type) {
+				case float64:
+					if int(v) > 0 {
+						limit = int(v)
+					}
+				case float32:
+					if int(v) > 0 {
+						limit = int(v)
+					}
+				case int:
+					if v > 0 {
+						limit = v
+					}
+				case int64:
+					if v > 0 {
+						limit = int(v)
+					}
+				case string:
+					if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+						limit = parsed
+					}
+				case json.Number:
+					if parsed, err := v.Int64(); err == nil && parsed > 0 {
+						limit = int(parsed)
+					}
+				}
+			}
+
+			if limit > 100 {
+				limit = 100
+			}
+
+			fetchK := limit
+			if fetchK < 10 {
+				fetchK = 10
+			}
+
+			titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
 			bm25Hits := index.GlobalEngine.Inverted.RankDocuments(
 				query,
-				index.GlobalEngine.DocTitles,
-				index.GlobalEngine.DocURLs,
-				index.GlobalEngine.DocBodies,
-				10,
+				titles,
+				urls,
+				bodies,
+				fetchK,
 			)
-			vectorHits := index.GlobalEngine.SearchVector(query, 10)
-			fusedHits := search.ReciprocalRankFusion(bm25Hits, vectorHits, 5)
+			vectorHits := index.GlobalEngine.SearchVector(query, fetchK)
+			fusedHits := search.ReciprocalRankFusion(query, bm25Hits, vectorHits, limit, titles, urls, bodies)
 
 			resJSON, _ := json.MarshalIndent(fusedHits, "", "  ")
 			toolResult = CallToolResult{

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/crawler-monorepo/common/stopwords"
 	"github.com/crawler-monorepo/internal/index"
 )
 
@@ -25,12 +26,31 @@ type HybridSearchHit struct {
 }
 
 func ReciprocalRankFusion(
+	query string,
 	bm25Hits []index.SearchHit,
 	vectorHits []index.VectorSearchResult,
 	topK int,
+	metadataMaps ...map[string]string,
 ) []HybridSearchHit {
 	if topK <= 0 {
 		topK = 5
+	}
+
+	var docTitles, docURLs, docBodies, docSourceTypes, docSourceURLs map[string]string
+	if len(metadataMaps) > 0 {
+		docTitles = metadataMaps[0]
+	}
+	if len(metadataMaps) > 1 {
+		docURLs = metadataMaps[1]
+	}
+	if len(metadataMaps) > 2 {
+		docBodies = metadataMaps[2]
+	}
+	if len(metadataMaps) > 3 {
+		docSourceTypes = metadataMaps[3]
+	}
+	if len(metadataMaps) > 4 {
+		docSourceURLs = metadataMaps[4]
 	}
 
 	bm25Ranks := make(map[string]int)
@@ -53,9 +73,7 @@ func ReciprocalRankFusion(
 		vectorSims[hit.DocID] = hit.Similarity
 	}
 
-	rrfScores := make(map[string]float64)
 	allDocIDs := make(map[string]bool)
-
 	for docID := range bm25Ranks {
 		allDocIDs[docID] = true
 	}
@@ -63,7 +81,21 @@ func ReciprocalRankFusion(
 		allDocIDs[docID] = true
 	}
 
-	var fusedHits []HybridSearchHit
+	type candidateRRF struct {
+		docID      string
+		rawRRF     float64
+		bm25Score  float64
+		vectorSim  float64
+		bmRank     int
+		vecRank    int
+		title      string
+		url        string
+		sourceType string
+		sourceURL  string
+		snippet    string
+	}
+
+	var candidates []candidateRRF
 
 	for docID := range allDocIDs {
 		var score float64
@@ -78,8 +110,6 @@ func ReciprocalRankFusion(
 			score += 1.0 / (RRFConstant + float64(vecRank))
 		}
 
-		rrfScores[docID] = score
-
 		title := ""
 		url := ""
 		snippet := ""
@@ -90,27 +120,100 @@ func ReciprocalRankFusion(
 		} else {
 			title = docID
 			url = docID
+			if docTitles != nil {
+				if t, ok := docTitles[docID]; ok && t != "" {
+					title = t
+				}
+			}
+			if docURLs != nil {
+				if u, ok := docURLs[docID]; ok && u != "" {
+					url = u
+				}
+			}
+			if docBodies != nil {
+				if b, ok := docBodies[docID]; ok && b != "" {
+					snippet = index.GenerateHighlightedSnippet(b, nil, 180)
+				}
+			}
 		}
 
-		fusedHits = append(fusedHits, HybridSearchHit{
-			DocID:      docID,
-			RRFScore:   math.Round(score*100000) / 100000,
-			BM25Score:  bm25Scores[docID],
-			VectorSim:  vectorSims[docID],
-			BM25Rank:   bmRank,
-			VectorRank: vecRank,
-			Title:      title,
-			URL:        url,
-			Snippet:    snippet,
+		sourceType := ""
+		sourceURL := ""
+		if docSourceTypes != nil {
+			if st, ok := docSourceTypes[docID]; ok && st != "" {
+				sourceType = st
+			}
+		}
+		if docSourceURLs != nil {
+			if su, ok := docSourceURLs[docID]; ok && su != "" {
+				sourceURL = su
+			}
+		}
+		if sourceType == "" {
+			sourceType = "web_crawled"
+		}
+		if sourceURL == "" {
+			if url != "" {
+				sourceURL = url
+			} else {
+				sourceURL = docID
+			}
+		}
+
+		candidates = append(candidates, candidateRRF{
+			docID:      docID,
+			rawRRF:     score,
+			bm25Score:  bm25Scores[docID],
+			vectorSim:  vectorSims[docID],
+			bmRank:     bmRank,
+			vecRank:    vecRank,
+			title:      title,
+			url:        url,
+			sourceType: sourceType,
+			sourceURL:  sourceURL,
+			snippet:    snippet,
 		})
 	}
 
-	sort.Slice(fusedHits, func(i, j int) bool {
-		return fusedHits[i].RRFScore > fusedHits[j].RRFScore
+	sort.Slice(candidates, func(i, j int) bool {
+		if math.Abs(candidates[i].rawRRF-candidates[j].rawRRF) < 1e-9 {
+			return candidates[i].docID < candidates[j].docID
+		}
+		return candidates[i].rawRRF > candidates[j].rawRRF
 	})
 
-	if len(fusedHits) > topK {
-		fusedHits = fusedHits[:topK]
+	if len(candidates) > topK {
+		candidates = candidates[:topK]
+	}
+
+	var fusedHits []HybridSearchHit
+	for _, c := range candidates {
+		fusedHits = append(fusedHits, HybridSearchHit{
+			DocID:      c.docID,
+			RRFScore:   math.Round(c.rawRRF*100000) / 100000,
+			BM25Score:  c.bm25Score,
+			VectorSim:  c.vectorSim,
+			BM25Rank:   c.bmRank,
+			VectorRank: c.vecRank,
+			Title:      c.title,
+			URL:        c.url,
+			SourceType: c.sourceType,
+			SourceURL:  c.sourceURL,
+			Snippet:    c.snippet,
+		})
+	}
+
+	if query != "" {
+		for i := range fusedHits {
+			boost := ComputeKeywordTitleBoostScore(query, fusedHits[i].Title, fusedHits[i].Snippet)
+			fusedHits[i].RRFScore += boost
+		}
+		sort.Slice(fusedHits, func(i, j int) bool {
+			if math.Abs(fusedHits[i].RRFScore-fusedHits[j].RRFScore) < 1e-9 {
+				return fusedHits[i].DocID < fusedHits[j].DocID
+			}
+			return fusedHits[i].RRFScore > fusedHits[j].RRFScore
+		})
 	}
 
 	return fusedHits
@@ -138,6 +241,10 @@ func ComputeKeywordTitleBoostScore(query string, title string, snippet string) f
 
 	var score float64
 	for _, qw := range qWords {
+		qw = strings.Trim(qw, ".,!?:;\"'()[]{}")
+		if qw == "" || stopwords.IsStopword(qw) {
+			continue
+		}
 		if strings.Contains(docText, qw) {
 			score += 1.5
 		}
@@ -145,6 +252,10 @@ func ComputeKeywordTitleBoostScore(query string, title string, snippet string) f
 
 	titleLower := strings.ToLower(title)
 	for _, qw := range qWords {
+		qw = strings.Trim(qw, ".,!?:;\"'()[]{}")
+		if qw == "" || stopwords.IsStopword(qw) {
+			continue
+		}
 		if strings.Contains(titleLower, qw) {
 			score += 2.0
 		}
@@ -158,27 +269,45 @@ func RerankCandidates(query string, candidateHits []HybridSearchHit, topK int) [
 		return nil
 	}
 
-	var reranked []RerankedHit
+	type candidateRerank struct {
+		hit          HybridSearchHit
+		rawScore     float64
+		originalRank int
+	}
+
+	var candidates []candidateRerank
 	for i, hit := range candidateHits {
 		boostScore := ComputeKeywordTitleBoostScore(query, hit.Title, hit.Snippet)
 		finalScore := (hit.RRFScore * 100.0) + boostScore
 
-		reranked = append(reranked, RerankedHit{
-			DocID:        hit.DocID,
-			RerankScore:  math.Round(finalScore*1000) / 1000,
-			OriginalRank: i + 1,
-			Title:        hit.Title,
-			URL:          hit.URL,
-			Snippet:      hit.Snippet,
+		candidates = append(candidates, candidateRerank{
+			hit:          hit,
+			rawScore:     finalScore,
+			originalRank: i + 1,
 		})
 	}
 
-	sort.Slice(reranked, func(i, j int) bool {
-		return reranked[i].RerankScore > reranked[j].RerankScore
+	sort.Slice(candidates, func(i, j int) bool {
+		if math.Abs(candidates[i].rawScore-candidates[j].rawScore) < 1e-9 {
+			return candidates[i].hit.DocID < candidates[j].hit.DocID
+		}
+		return candidates[i].rawScore > candidates[j].rawScore
 	})
 
-	if len(reranked) > topK {
-		reranked = reranked[:topK]
+	if len(candidates) > topK {
+		candidates = candidates[:topK]
+	}
+
+	var reranked []RerankedHit
+	for _, c := range candidates {
+		reranked = append(reranked, RerankedHit{
+			DocID:        c.hit.DocID,
+			RerankScore:  math.Round(c.rawScore*1000) / 1000,
+			OriginalRank: c.originalRank,
+			Title:        c.hit.Title,
+			URL:          c.hit.URL,
+			Snippet:      c.hit.Snippet,
+		})
 	}
 
 	return reranked

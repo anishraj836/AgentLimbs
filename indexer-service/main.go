@@ -72,9 +72,15 @@ func main() {
 
 			sem <- struct{}{}
 			wg.Add(1)
+			offsetTracker.MarkStarted(msg)
 			go func(m ckafka.Message) {
 				defer wg.Done()
 				defer func() { <-sem }()
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Log.Error("Panic isolated in indexer worker", zap.Any("recover", r))
+					}
+				}()
 
 				var tokenizedDoc TokenizedDocument
 				if err := json.Unmarshal(m.Value, &tokenizedDoc); err != nil {

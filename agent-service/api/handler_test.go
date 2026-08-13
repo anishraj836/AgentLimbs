@@ -78,10 +78,10 @@ func TestGetClientIP(t *testing.T) {
 			expectedIP: "203.0.113.195",
 		},
 		{
-			name:       "Trusted proxy (127.0.0.1) parses X-Forwarded-For multiple IPs",
+			name:       "Trusted proxy (127.0.0.1) parses X-Forwarded-For right-to-left (returns nearest untrusted IP)",
 			remoteAddr: "127.0.0.1:12345",
 			headers:    map[string]string{"X-Forwarded-For": "203.0.113.195, 70.41.3.18"},
-			expectedIP: "203.0.113.195",
+			expectedIP: "70.41.3.18",
 		},
 		{
 			name:       "Untrusted client (203.0.113.5) IGNORES fake X-Forwarded-For header",

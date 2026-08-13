@@ -4,10 +4,16 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/crawler-monorepo/agent-service/api"
+	"github.com/crawler-monorepo/common/config"
 	"github.com/crawler-monorepo/common/logger"
+	appMiddleware "github.com/crawler-monorepo/common/middleware"
 	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/common/redis"
 	"github.com/crawler-monorepo/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -18,7 +24,16 @@ func main() {
 	logger.InitLogger(os.Getenv("ENV"))
 	defer logger.Sync()
 
+	if _, err := config.LoadAndValidate(); err != nil {
+		logger.Log.Fatal("Configuration validation error", zap.Error(err))
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	storage.InitDB(os.Getenv("DATABASE_URL"))
+	defer storage.CloseDB()
+	defer redis.CloseRedis()
 	if err := index.GlobalEngine.LoadFromDB(context.Background()); err != nil {
 		logger.Log.Info("No existing persisted corpus loaded from DB into agent-service memory")
 	}
@@ -43,6 +58,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(appMiddleware.RequestIDMiddleware)
 	r.Use(api.SecurityMiddleware(execMode, apiKey, rateLimiter))
 
 	r.Post("/v1/scrape", handler.Scrape)
@@ -58,7 +74,29 @@ func main() {
 	}
 
 	logger.Log.Info("Agent Service listening on port " + port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
-		logger.Log.Fatal("Agent Service failed to start", zap.Error(err))
+	
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           r,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Log.Fatal("Agent Service failed to start", zap.Error(err))
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Log.Info("Shutting down Agent Service gracefully...")
+	
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Log.Error("Agent Service forced to shutdown", zap.Error(err))
 	}
 }

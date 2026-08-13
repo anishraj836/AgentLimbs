@@ -6,10 +6,24 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	tiktoken "github.com/pkoukk/tiktoken-go"
 	"golang.org/x/net/html"
 )
+
+var (
+	globalTiktokenCodec *tiktoken.Tiktoken
+	globalTiktokenOnce  sync.Once
+	globalTiktokenErr   error
+)
+
+func getGlobalTiktokenCodec() (*tiktoken.Tiktoken, error) {
+	globalTiktokenOnce.Do(func() {
+		globalTiktokenCodec, globalTiktokenErr = tiktoken.GetEncoding("cl100k_base")
+	})
+	return globalTiktokenCodec, globalTiktokenErr
+}
 
 // CleanDocument represents a structured document after HTML boilerplate removal.
 type CleanDocument struct {
@@ -45,8 +59,8 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte, mode string) (mar
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# %s\n\n", title))
 
-	processASTTables(doc, &sb)
-	renderASTBody(doc, &sb, baseURL, mode)
+	processASTTables(doc, &sb, 0)
+	renderASTBody(doc, &sb, baseURL, mode, 0)
 
 	result := strings.TrimSpace(sb.String())
 	tokenEstimate = CountBPETokens(result)
@@ -59,36 +73,42 @@ func ExtractTitleFromAST(n *html.Node) string {
 		return ""
 	}
 	var title string
-	var findTitle func(*html.Node)
-	findTitle = func(node *html.Node) {
+	var findTitle func(*html.Node, int)
+	findTitle = func(node *html.Node, depth int) {
+		if node == nil || depth > 128 {
+			return
+		}
 		if node.Type == html.ElementNode && strings.ToLower(node.Data) == "title" {
-			title = strings.TrimSpace(getNodeText(node))
+			title = strings.TrimSpace(getNodeText(node, depth+1))
 			return
 		}
 		for c := node.FirstChild; c != nil; c = c.NextSibling {
-			findTitle(c)
+			findTitle(c, depth+1)
 			if title != "" {
 				return
 			}
 		}
 	}
-	findTitle(n)
+	findTitle(n, 0)
 
 	if title == "" {
-		var findH1 func(*html.Node)
-		findH1 = func(node *html.Node) {
+		var findH1 func(*html.Node, int)
+		findH1 = func(node *html.Node, depth int) {
+			if node == nil || depth > 128 {
+				return
+			}
 			if node.Type == html.ElementNode && strings.ToLower(node.Data) == "h1" {
-				title = strings.TrimSpace(getNodeText(node))
+				title = strings.TrimSpace(getNodeText(node, depth+1))
 				return
 			}
 			for c := node.FirstChild; c != nil; c = c.NextSibling {
-				findH1(c)
+				findH1(c, depth+1)
 				if title != "" {
 					return
 				}
 			}
 		}
-		findH1(n)
+		findH1(n, 0)
 	}
 
 	return title
@@ -99,7 +119,7 @@ func CountBPETokens(text string) int {
 	if text == "" {
 		return 0
 	}
-	tke, err := tiktoken.GetEncoding("cl100k_base")
+	tke, err := getGlobalTiktokenCodec()
 	if err != nil {
 		return len(strings.Fields(text))
 	}
@@ -115,12 +135,12 @@ func ProcessRawHTML(sourceURL string, htmlContent []byte) (*CleanDocument, error
 	}
 
 	title := ExtractTitleFromAST(doc)
-	lang := extractAttributeFromAST(doc, "html", "lang")
+	lang := extractAttributeFromAST(doc, "html", "lang", 0)
 	if lang == "" {
 		lang = "en"
 	}
 
-	pubdate := extractMetaContentFromAST(doc, "pubdate")
+	pubdate := extractMetaContentFromAST(doc, "pubdate", 0)
 	links := extractLinksFromAST(doc, sourceURL)
 
 	bodyParts := extractBlockTextsFromAST(doc)
@@ -183,8 +203,8 @@ func isIgnoredNode(n *html.Node, mode string) bool {
 	return ignored[tag]
 }
 
-func getNodeText(n *html.Node) string {
-	if n == nil {
+func getNodeText(n *html.Node, depth int) string {
+	if n == nil || depth > 128 {
 		return ""
 	}
 	if n.Type == html.TextNode {
@@ -192,13 +212,13 @@ func getNodeText(n *html.Node) string {
 	}
 	var sb strings.Builder
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		sb.WriteString(getNodeText(c))
+		sb.WriteString(getNodeText(c, depth+1))
 	}
 	return sb.String()
 }
 
-func extractTextFromAST(n *html.Node, mode string) string {
-	if n == nil || isIgnoredNode(n, mode) {
+func extractTextFromAST(n *html.Node, mode string, depth int) string {
+	if n == nil || depth > 128 || isIgnoredNode(n, mode) {
 		return ""
 	}
 	if n.Type == html.TextNode {
@@ -206,7 +226,7 @@ func extractTextFromAST(n *html.Node, mode string) string {
 	}
 	var parts []string
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		t := strings.TrimSpace(extractTextFromAST(c, mode))
+		t := strings.TrimSpace(extractTextFromAST(c, mode, depth+1))
 		if t != "" {
 			parts = append(parts, t)
 		}
@@ -214,8 +234,8 @@ func extractTextFromAST(n *html.Node, mode string) string {
 	return strings.Join(parts, " ")
 }
 
-func formatASTInlineText(n *html.Node, baseURL *url.URL, mode string) string {
-	if n == nil {
+func formatASTInlineText(n *html.Node, baseURL *url.URL, mode string, depth int) string {
+	if n == nil || depth > 128 {
 		return ""
 	}
 	if n.Type == html.TextNode {
@@ -227,7 +247,7 @@ func formatASTInlineText(n *html.Node, baseURL *url.URL, mode string) string {
 
 	tag := strings.ToLower(n.Data)
 	if tag == "code" {
-		t := strings.TrimSpace(getNodeText(n))
+		t := strings.TrimSpace(getNodeText(n, depth+1))
 		if t != "" {
 			return fmt.Sprintf("`%s`", t)
 		}
@@ -242,7 +262,7 @@ func formatASTInlineText(n *html.Node, baseURL *url.URL, mode string) string {
 				break
 			}
 		}
-		anchorText := strings.TrimSpace(getNodeText(n))
+		anchorText := strings.TrimSpace(getNodeText(n, depth+1))
 		if href != "" && anchorText != "" {
 			if strings.HasPrefix(anchorText, "[") && strings.Contains(anchorText, "](") {
 				return anchorText
@@ -250,24 +270,31 @@ func formatASTInlineText(n *html.Node, baseURL *url.URL, mode string) string {
 			if mode == "clean_rag" && strings.HasPrefix(href, "#") {
 				return anchorText
 			}
-			absURL := href
-			if parsed, err := url.Parse(href); err == nil && baseURL != nil {
-				absURL = baseURL.ResolveReference(parsed).String()
+			parsed, err := url.Parse(href)
+			if err != nil {
+				return anchorText
 			}
-			return fmt.Sprintf("[%s](%s)", anchorText, absURL)
+			resolved := parsed
+			if baseURL != nil {
+				resolved = baseURL.ResolveReference(parsed)
+			}
+			if resolved.Scheme != "http" && resolved.Scheme != "https" {
+				return anchorText
+			}
+			return fmt.Sprintf("[%s](%s)", anchorText, resolved.String())
 		}
 		return anchorText
 	}
 
 	var sb strings.Builder
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		sb.WriteString(formatASTInlineText(c, baseURL, mode))
+		sb.WriteString(formatASTInlineText(c, baseURL, mode, depth+1))
 	}
 	return sb.String()
 }
 
-func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode string) {
-	if n == nil {
+func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode string, depth int) {
+	if n == nil || depth > 128 {
 		return
 	}
 
@@ -277,33 +304,36 @@ func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode str
 		}
 
 		tag := strings.ToLower(n.Data)
+		if tag == "table" {
+			return
+		}
 		switch tag {
 		case "h1":
-			t := strings.TrimSpace(getNodeText(n))
+			t := strings.TrimSpace(getNodeText(n, depth+1))
 			if t != "" {
 				sb.WriteString(fmt.Sprintf("# %s\n\n", t))
 			}
 			return
 		case "h2":
-			t := strings.TrimSpace(getNodeText(n))
+			t := strings.TrimSpace(getNodeText(n, depth+1))
 			if t != "" {
 				sb.WriteString(fmt.Sprintf("## %s\n\n", t))
 			}
 			return
 		case "h3":
-			t := strings.TrimSpace(getNodeText(n))
+			t := strings.TrimSpace(getNodeText(n, depth+1))
 			if t != "" {
 				sb.WriteString(fmt.Sprintf("### %s\n\n", t))
 			}
 			return
 		case "h4", "h5", "h6":
-			t := strings.TrimSpace(getNodeText(n))
+			t := strings.TrimSpace(getNodeText(n, depth+1))
 			if t != "" {
 				sb.WriteString(fmt.Sprintf("#### %s\n\n", t))
 			}
 			return
 		case "p":
-			t := strings.TrimSpace(formatASTInlineText(n, baseURL, mode))
+			t := strings.TrimSpace(formatASTInlineText(n, baseURL, mode, depth+1))
 			if t != "" {
 				sb.WriteString(fmt.Sprintf("%s\n\n", t))
 			}
@@ -311,7 +341,7 @@ func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode str
 		case "ul", "ol":
 			for c := n.FirstChild; c != nil; c = c.NextSibling {
 				if c.Type == html.ElementNode && strings.ToLower(c.Data) == "li" {
-					itemText := strings.TrimSpace(formatASTInlineText(c, baseURL, mode))
+					itemText := strings.TrimSpace(formatASTInlineText(c, baseURL, mode, depth+1))
 					if itemText != "" {
 						sb.WriteString(fmt.Sprintf("- %s\n", itemText))
 					}
@@ -320,13 +350,13 @@ func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode str
 			sb.WriteString("\n")
 			return
 		case "blockquote":
-			t := strings.TrimSpace(getNodeText(n))
+			t := strings.TrimSpace(getNodeText(n, depth+1))
 			if t != "" {
 				sb.WriteString(fmt.Sprintf("> %s\n\n", t))
 			}
 			return
 		case "pre":
-			t := strings.TrimSpace(getNodeText(n))
+			t := strings.TrimSpace(getNodeText(n, depth+1))
 			if t != "" {
 				sb.WriteString(fmt.Sprintf("```\n%s\n```\n\n", t))
 			}
@@ -335,57 +365,88 @@ func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode str
 	}
 
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		renderASTBody(c, sb, baseURL, mode)
+		renderASTBody(c, sb, baseURL, mode, depth+1)
 	}
 }
 
-func processASTTables(n *html.Node, sb *strings.Builder) {
-	if n == nil {
+func processASTTables(n *html.Node, sb *strings.Builder, depth int) {
+	if n == nil || depth > 128 {
 		return
 	}
 	if n.Type == html.ElementNode && strings.ToLower(n.Data) == "table" {
 		var headers []string
 		var rows [][]string
 
-		var extractRows func(*html.Node)
-		extractRows = func(node *html.Node) {
+		var extractRows func(*html.Node, int)
+		extractRows = func(node *html.Node, d int) {
+			if node == nil || d > 128 {
+				return
+			}
 			if node.Type == html.ElementNode {
 				tag := strings.ToLower(node.Data)
 				if tag == "th" {
-					headers = append(headers, strings.TrimSpace(getNodeText(node)))
-				} else if tag == "tr" {
-					var row []string
-					for c := node.FirstChild; c != nil; c = c.NextSibling {
-						if c.Type == html.ElementNode && strings.ToLower(c.Data) == "td" {
-							row = append(row, strings.TrimSpace(getNodeText(c)))
+					if len(headers) < 50 {
+						cellText := strings.TrimSpace(getNodeText(node, d+1))
+						if len(cellText) > 1000 {
+							cellText = cellText[:1000]
 						}
+						headers = append(headers, cellText)
 					}
-					if len(row) > 0 {
-						rows = append(rows, row)
+				} else if tag == "tr" {
+					if len(rows) < 500 {
+						var row []string
+						for c := node.FirstChild; c != nil; c = c.NextSibling {
+							if c.Type == html.ElementNode && strings.ToLower(c.Data) == "td" {
+								if len(row) < 50 {
+									cellText := strings.TrimSpace(getNodeText(c, d+1))
+									if len(cellText) > 1000 {
+										cellText = cellText[:1000]
+									}
+									row = append(row, cellText)
+								}
+							}
+						}
+						if len(row) > 0 {
+							rows = append(rows, row)
+						}
 					}
 				}
 			}
 			for c := node.FirstChild; c != nil; c = c.NextSibling {
-				extractRows(c)
+				extractRows(c, d+1)
 			}
 		}
 
-		extractRows(n)
+		extractRows(n, depth+1)
 
 		if len(headers) == 0 && len(rows) > 0 {
-			for colIdx := range rows[0] {
+			maxCols := len(rows[0])
+			if maxCols > 50 {
+				maxCols = 50
+			}
+			for colIdx := 0; colIdx < maxCols; colIdx++ {
 				headers = append(headers, fmt.Sprintf("Col %d", colIdx+1))
 			}
+		}
+
+		if len(headers) > 50 {
+			headers = headers[:50]
 		}
 
 		if len(headers) > 0 {
 			sb.WriteString("| " + strings.Join(headers, " | ") + " |\n")
 			dividers := make([]string, len(headers))
-			for d := range dividers {
-				dividers[d] = "---"
+			for dIdx := range dividers {
+				dividers[dIdx] = "---"
 			}
 			sb.WriteString("| " + strings.Join(dividers, " | ") + " |\n")
 			for _, r := range rows {
+				if len(r) > len(headers) {
+					r = r[:len(headers)]
+				}
+				for len(r) < len(headers) {
+					r = append(r, "")
+				}
 				sb.WriteString("| " + strings.Join(r, " | ") + " |\n")
 			}
 			sb.WriteString("\n")
@@ -393,12 +454,12 @@ func processASTTables(n *html.Node, sb *strings.Builder) {
 	}
 
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		processASTTables(c, sb)
+		processASTTables(c, sb, depth+1)
 	}
 }
 
-func extractAttributeFromAST(n *html.Node, targetTag, attrKey string) string {
-	if n == nil {
+func extractAttributeFromAST(n *html.Node, targetTag, attrKey string, depth int) string {
+	if n == nil || depth > 128 {
 		return ""
 	}
 	if n.Type == html.ElementNode && strings.ToLower(n.Data) == strings.ToLower(targetTag) {
@@ -409,7 +470,7 @@ func extractAttributeFromAST(n *html.Node, targetTag, attrKey string) string {
 		}
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		val := extractAttributeFromAST(c, targetTag, attrKey)
+		val := extractAttributeFromAST(c, targetTag, attrKey, depth+1)
 		if val != "" {
 			return val
 		}
@@ -417,8 +478,8 @@ func extractAttributeFromAST(n *html.Node, targetTag, attrKey string) string {
 	return ""
 }
 
-func extractMetaContentFromAST(n *html.Node, name string) string {
-	if n == nil {
+func extractMetaContentFromAST(n *html.Node, name string, depth int) string {
+	if n == nil || depth > 128 {
 		return ""
 	}
 	if n.Type == html.ElementNode && strings.ToLower(n.Data) == "meta" {
@@ -437,7 +498,7 @@ func extractMetaContentFromAST(n *html.Node, name string) string {
 		}
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		val := extractMetaContentFromAST(c, name)
+		val := extractMetaContentFromAST(c, name, depth+1)
 		if val != "" {
 			return val
 		}
@@ -449,33 +510,38 @@ func extractLinksFromAST(n *html.Node, sourceURL string) []string {
 	var links []string
 	baseURL, _ := url.Parse(sourceURL)
 
-	var walk func(*html.Node)
-	walk = func(node *html.Node) {
+	var walk func(*html.Node, int)
+	walk = func(node *html.Node, depth int) {
+		if node == nil || depth > 128 {
+			return
+		}
 		if node.Type == html.ElementNode && strings.ToLower(node.Data) == "a" {
 			for _, a := range node.Attr {
 				if strings.ToLower(a.Key) == "href" {
 					if parsed, err := url.Parse(a.Val); err == nil && baseURL != nil {
 						parsed.Fragment = ""
-						abs := baseURL.ResolveReference(parsed).String()
-						links = append(links, abs)
+						abs := baseURL.ResolveReference(parsed)
+						if abs.Scheme == "http" || abs.Scheme == "https" {
+							links = append(links, abs.String())
+						}
 					}
 					break
 				}
 			}
 		}
 		for c := node.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+			walk(c, depth+1)
 		}
 	}
-	walk(n)
+	walk(n, 0)
 	return links
 }
 
 func extractBlockTextsFromAST(n *html.Node) []string {
 	var parts []string
-	var walk func(*html.Node)
-	walk = func(node *html.Node) {
-		if node == nil {
+	var walk func(*html.Node, int)
+	walk = func(node *html.Node, depth int) {
+		if node == nil || depth > 128 {
 			return
 		}
 		if isIgnoredNode(node, "clean_rag") {
@@ -488,7 +554,7 @@ func extractBlockTextsFromAST(n *html.Node) []string {
 				"h5": true, "h6": true, "li": true, "article": true, "main": true, "section": true,
 			}
 			if blockTags[tag] {
-				t := strings.TrimSpace(getNodeText(node))
+				t := strings.TrimSpace(getNodeText(node, depth+1))
 				if len(t) > 3 {
 					parts = append(parts, t)
 				}
@@ -496,9 +562,9 @@ func extractBlockTextsFromAST(n *html.Node) []string {
 			}
 		}
 		for c := node.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+			walk(c, depth+1)
 		}
 	}
-	walk(n)
+	walk(n, 0)
 	return parts
 }

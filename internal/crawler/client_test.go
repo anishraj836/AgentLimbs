@@ -135,3 +135,162 @@ Disallow: /blocked/
 		t.Errorf("Expected /blocked/page to be disallowed for OtherBot")
 	}
 }
+
+func TestIsMediaResourceURL(t *testing.T) {
+	blockedURLs := []string{
+		"https://example.com/image.png",
+		"https://example.com/photo.JPEG",
+		"https://example.com/icon.svg?v=1",
+		"https://example.com/banner.webp",
+		"https://example.com/font.woff2",
+		"https://example.com/video.mp4",
+		"https://example.com/audio.mp3",
+		"https://example.com/image.png;matrix_param=123",
+		"https://example.com/video.mp4/",
+		"https://example.com/audio.mp3;jsessionid=456/",
+	}
+
+	for _, u := range blockedURLs {
+		if !IsMediaResourceURL(u) {
+			t.Errorf("Expected %s to be recognized as media resource URL", u)
+		}
+	}
+
+	allowedURLs := []string{
+		"https://example.com/style.css",
+		"https://example.com/app.js",
+		"https://example.com/module.mjs",
+		"https://example.com/data.json",
+		"https://example.com/index.html",
+		"https://example.com/about",
+		"https://example.com/about/",
+		"https://example.com/page.html;jsessionid=789",
+	}
+
+	for _, u := range allowedURLs {
+		if IsMediaResourceURL(u) {
+			t.Errorf("Expected %s NOT to be recognized as media resource URL", u)
+		}
+	}
+}
+
+func TestFetchBlockedMediaResource(t *testing.T) {
+	client := NewTestClient(true)
+	GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nDisallow:")
+
+	_, err := client.Fetch(context.Background(), "https://example.com/image.png")
+	if err == nil {
+		t.Fatalf("Expected error when fetching media URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "blocked media resource") {
+		t.Errorf("Expected blocked media error message, got: %v", err)
+	}
+}
+
+func TestStrictHostMatchCookieScoping(t *testing.T) {
+	receivedHeaders := make(map[string]http.Header)
+	mockTransport := &mockRoundTripper{
+		fn: func(req *http.Request) (*http.Response, error) {
+			receivedHeaders[req.URL.String()] = req.Header.Clone()
+			if req.URL.String() == "https://domaina.com/redirect-cross" {
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header: http.Header{
+						"Location": []string{"https://domainb.com/target"},
+					},
+					Request: req,
+				}, nil
+			}
+			if req.URL.String() == "https://domaina.com/redirect-same" {
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header: http.Header{
+						"Location": []string{"https://domaina.com/target"},
+					},
+					Request: req,
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("OK")),
+				Request:    req,
+			}, nil
+		},
+	}
+
+	client := NewTestClientWithTransport(mockTransport, true)
+
+	// Case 1: Cross-host redirect (domaina.com -> domainb.com)
+	reqCross, _ := http.NewRequest("GET", "https://domaina.com/redirect-cross", nil)
+	reqCross.Header.Set("Cookie", "session_id=secret123")
+	reqCross.Header.Set("Authorization", "Bearer secret_token")
+	_, err := client.client.Do(reqCross)
+	if err != nil {
+		t.Fatalf("Do failed for cross-host redirect: %v", err)
+	}
+
+	targetHeaderCross := receivedHeaders["https://domainb.com/target"]
+	if targetHeaderCross.Get("Cookie") != "" {
+		t.Errorf("Expected Cookie header to be stripped on cross-host redirect, got: %s", targetHeaderCross.Get("Cookie"))
+	}
+	if targetHeaderCross.Get("Authorization") != "" {
+		t.Errorf("Expected Authorization header to be stripped on cross-host redirect, got: %s", targetHeaderCross.Get("Authorization"))
+	}
+
+	// Case 2: Same-host redirect (domaina.com -> domaina.com)
+	reqSame, _ := http.NewRequest("GET", "https://domaina.com/redirect-same", nil)
+	reqSame.Header.Set("Cookie", "session_id=secret123")
+	_, err = client.client.Do(reqSame)
+	if err != nil {
+		t.Fatalf("Do failed for same-host redirect: %v", err)
+	}
+
+	targetHeaderSame := receivedHeaders["https://domaina.com/target"]
+	if targetHeaderSame.Get("Cookie") != "session_id=secret123" {
+		t.Errorf("Expected Cookie header to be retained on same-host redirect, got: %s", targetHeaderSame.Get("Cookie"))
+	}
+}
+
+func TestFetchSmart_SPARendering(t *testing.T) {
+	mockTransport := &mockRoundTripper{
+		fn: func(req *http.Request) (*http.Response, error) {
+			// Returns SPA placeholder div
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`<div id="root"></div>`)),
+				Request:    req,
+			}, nil
+		},
+	}
+
+	client := NewTestClientWithTransport(mockTransport, true)
+	GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nDisallow:")
+
+	// 1. Automatic SPA rendering trigger when SPA placeholder detected
+	res, err := client.FetchSmart(context.Background(), "https://example.com/spa-page", false)
+	if err != nil {
+		t.Fatalf("FetchSmart failed: %v", err)
+	}
+	defer res.Response.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(res.Response.Body)
+	bodyStr := string(bodyBytes)
+
+	if !strings.Contains(bodyStr, "Rendered Content for https://example.com/spa-page") {
+		t.Errorf("Expected rendered SPA content, got: %s", bodyStr)
+	}
+
+	// 2. Forced JS rendering
+	resForced, err := client.FetchSmart(context.Background(), "https://example.com/forced-js", true)
+	if err != nil {
+		t.Fatalf("FetchSmart with forceJS failed: %v", err)
+	}
+	defer resForced.Response.Body.Close()
+
+	forcedBytes, _ := io.ReadAll(resForced.Response.Body)
+	forcedStr := string(forcedBytes)
+
+	if !strings.Contains(forcedStr, "Rendered Content for https://example.com/forced-js") {
+		t.Errorf("Expected forced rendered SPA content, got: %s", forcedStr)
+	}
+}

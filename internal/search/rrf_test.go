@@ -17,7 +17,7 @@ func TestReciprocalRankFusion(t *testing.T) {
 		{DocID: "doc3", Similarity: 0.85},
 	}
 
-	fused := ReciprocalRankFusion(bm25Hits, vectorHits, 5)
+	fused := ReciprocalRankFusion("", bm25Hits, vectorHits, 5)
 
 	if len(fused) != 3 {
 		t.Fatalf("Expected 3 fused hits, got %d", len(fused))
