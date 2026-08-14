@@ -963,14 +963,15 @@ func repairCommonMissingLigatures(text string) string {
 
 func cleanExtractedPDFText(raw string) string {
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-
+	raw = decomposeLigatures(raw)
 	reEnDash := regexp.MustCompile(`(\d)[\x1e\x1f\x1b\x1d](\d)`)
 	raw = reEnDash.ReplaceAllString(raw, "$1–$2")
-
 	reBullet := regexp.MustCompile(`(?m)^\s*[\x1e\x1f\x1b\x01-\x08\x10-\x1a]\s*`)
 	raw = reBullet.ReplaceAllString(raw, "- ")
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 
-	raw = decomposeLigatures(raw)
+
+
 
 	var sb strings.Builder
 	for _, r := range raw {
