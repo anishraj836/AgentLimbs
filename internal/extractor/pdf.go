@@ -149,57 +149,70 @@ func isGenericTitle(t string) bool {
 
 func extractTitleFromCleanedText(cleanedText string) string {
 	lines := strings.Split(cleanedText, "\n")
-	var candidateLines []string
 
-	for _, l := range lines {
+	// Pass 1: Find prominent title followed within 8 lines by authors / affiliations / emails / Abstract
+	for i, l := range lines {
 		trimmed := strings.TrimSpace(l)
-		if trimmed == "" {
+		if len(trimmed) < 4 || len(trimmed) > 120 {
 			continue
 		}
-		if reArxivHeader.MatchString(trimmed) || strings.Contains(strings.ToLower(trimmed), "arxiv:") {
+		// Must start with uppercase letter
+		runes := []rune(trimmed)
+		if !unicode.IsUpper(runes[0]) {
 			continue
 		}
-		if rePageNumber.MatchString(trimmed) {
+		// Cannot end with punctuation
+		if strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, ",") || strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, ";") || strings.HasSuffix(trimmed, "?") {
 			continue
 		}
-		if reBoilerplateText.MatchString(trimmed) {
+		if reArxivHeader.MatchString(trimmed) || reBoilerplateText.MatchString(trimmed) || rePageNumber.MatchString(trimmed) || reSectionStop.MatchString(trimmed) {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "%") {
-			continue
-		}
-		if reSectionStop.MatchString(trimmed) {
-			if len(candidateLines) > 0 {
-				break
-			}
-			continue
-		}
-
 		lower := strings.ToLower(trimmed)
-		if strings.Contains(lower, "@") || strings.Contains(lower, "department of") ||
-			strings.Contains(lower, "university") || strings.Contains(lower, "laboratory") ||
-			strings.Contains(lower, "institute") || strings.Contains(lower, "google research") ||
-			strings.Contains(lower, "google brain") {
+		if strings.HasPrefix(lower, "figure ") || strings.HasPrefix(lower, "fig. ") || strings.HasPrefix(lower, "table ") || strings.Contains(lower, "@") {
+			continue
+		}
+		if isGenericTitle(trimmed) {
 			continue
 		}
 
-		// Reject lines that look like figure captions or table headers
-		if strings.HasPrefix(lower, "figure ") || strings.HasPrefix(lower, "fig. ") || strings.HasPrefix(lower, "table ") {
-			continue
-		}
-
-		// Reject body sentences (titles almost never end with a period, comma, colon, or semicolon)
-		if strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, ",") || strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, ";") {
-			continue
-		}
-
-		if len(trimmed) >= 4 && len(trimmed) <= 120 {
-			candidateLines = append(candidateLines, trimmed)
+		// Look ahead up to 8 lines for author indicators: @, Google Brain, Research, University, Department, Institute, or Abstract
+		for j := i + 1; j < len(lines) && j <= i+8; j++ {
+			nextTrimmed := strings.TrimSpace(lines[j])
+			nextLower := strings.ToLower(nextTrimmed)
+			if strings.Contains(nextLower, "@") || strings.Contains(nextLower, "google brain") ||
+				strings.Contains(nextLower, "google research") || strings.Contains(nextLower, "university") ||
+				strings.Contains(nextLower, "department of") || strings.Contains(nextLower, "institute") ||
+				strings.Contains(nextLower, "laboratory") || strings.EqualFold(nextTrimmed, "abstract") {
+				return trimmed
+			}
 		}
 	}
 
-	if len(candidateLines) > 0 {
-		return candidateLines[0]
+	// Pass 2: Fallback to first capitalized non-boilerplate line before introduction
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if len(trimmed) < 4 || len(trimmed) > 120 {
+			continue
+		}
+		runes := []rune(trimmed)
+		if !unicode.IsUpper(runes[0]) {
+			continue
+		}
+		if strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, ",") || strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, ";") {
+			continue
+		}
+		if reArxivHeader.MatchString(trimmed) || reBoilerplateText.MatchString(trimmed) || rePageNumber.MatchString(trimmed) || reSectionStop.MatchString(trimmed) {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "figure ") || strings.HasPrefix(lower, "fig. ") || strings.HasPrefix(lower, "table ") || strings.Contains(lower, "@") {
+			continue
+		}
+		if isGenericTitle(trimmed) {
+			continue
+		}
+		return trimmed
 	}
 
 	return ""
@@ -826,14 +839,18 @@ func parsePDFHexString(s string) string {
 }
 
 var (
-	reEnDashDigits  = regexp.MustCompile(`(\d)[\x00-\x1f\x7f](\d)`)
-	reLeadingBullet = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f][ \t]+`)
-	reHyphenUnicode = regexp.MustCompile(`(?m)(\p{L}+)-\s*\n\s*(\p{L}+)`)
-	reHyphenAscii2  = regexp.MustCompile(`(?m)(\w+)-\s*\n\s*(\w+)`)
-	reSpacesGlobal  = regexp.MustCompile(`[ \t]+`)
+	reEnDashDigits           = regexp.MustCompile(`(\d)[\x00-\x1f\x7f](\d)`)
+	reIsolatedBulletSymbol   = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]*$`)
+	reLeadingBullet          = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]+`)
+	reHyphenUnicode          = regexp.MustCompile(`(?m)(\p{L}+)-\s*\n\s*(\p{L}+)`)
+	reHyphenAscii2           = regexp.MustCompile(`(?m)(\w+)-\s*\n\s*(\w+)`)
+	reSpacesGlobal           = regexp.MustCompile(`[ \t]+`)
 
 	// Static pre-compiled lexical ligature repair patterns for unambiguous technical vocabulary
 	reFixFirmly        = regexp.MustCompile(`(?i)\brmly\b`)
+	reFixFirst         = regexp.MustCompile(`(?i)\brst\b`)
+	reFixFlowWord      = regexp.MustCompile(`(?i)\b(information|work|data|signal|cash|air|blood|traffic|control|optical)\s+ow\b`)
+	reFixFinalWord     = regexp.MustCompile(`(?i)\b(the|a|its|their|in the|resulting in the)\s+nal\b`)
 	reFixEfficiency    = regexp.MustCompile(`(?i)\befcien(t|tly|cy|cies)\b`)
 	reFixSignificant   = regexp.MustCompile(`(?i)\bsignican(t|tly|ce)\b`)
 	reFixDifficult     = regexp.MustCompile(`(?i)\bdifcul(t|ty|ties|tly)\b`)
@@ -874,13 +891,20 @@ var (
 	reFixFlexible      = regexp.MustCompile(`(?i)\bexible\b`)
 	reFixFlexibility   = regexp.MustCompile(`(?i)\bexibility\b`)
 	reFixFluctuate     = regexp.MustCompile(`(?i)\buctuat(e|ed|ing|ion|ions)\b`)
+
+	// Static bullet formatting regexes
+	reIsolatedBulletLine = regexp.MustCompile(`(?m)^[ \t]*[•\-\*\x1e\x1f\x01-\x08\x10-\x1a][ \t]*\n[ \t]*(\S+)`)
+	reInlineBulletLine   = regexp.MustCompile(`(?m)^[ \t]*[•\x1e\x1f\x01-\x08\x10-\x1a][ \t]+(\S+)`)
 )
 
 func decomposeLigatures(s string) string {
 	// 1. Convert control bytes between digits (e.g. 770\x1f778) to en-dash (770–778) FIRST before ligature replacement
 	s = reEnDashDigits.ReplaceAllString(s, "${1}–${2}")
 
-	// 2. Convert leading control bytes on lines to markdown list bullets
+	// 2. Convert standalone bullet control bytes to "•" so they are not stripped by unicode.IsPrint
+	s = reIsolatedBulletSymbol.ReplaceAllString(s, "•")
+
+	// 3. Convert leading control bytes on lines to markdown list bullets
 	s = reLeadingBullet.ReplaceAllString(s, "- ")
 
 	// 3. Unambiguous Unicode presentation ligatures & explicit TeX ligatures
@@ -917,6 +941,9 @@ func decomposeLigatures(s string) string {
 // All patterns are carefully bounded to multi-letter words to NEVER corrupt names like "Nal Kalchbrenner".
 func repairCommonMissingLigatures(text string) string {
 	text = reFixFirmly.ReplaceAllString(text, "firmly")
+	text = reFixFirst.ReplaceAllString(text, "first")
+	text = reFixFlowWord.ReplaceAllString(text, "$1 flow")
+	text = reFixFinalWord.ReplaceAllString(text, "$1 final")
 	text = reFixEfficiency.ReplaceAllString(text, "efficien$1")
 	text = reFixSignificant.ReplaceAllString(text, "significan$1")
 	text = reFixDifficult.ReplaceAllString(text, "difficul$1")
@@ -982,10 +1009,29 @@ func cleanExtractedPDFText(raw string) string {
 
 	lines := strings.Split(text, "\n")
 	var cleanLines []string
-	for _, l := range lines {
-		trimmed := strings.TrimSpace(reSpacesGlobal.ReplaceAllString(l, " "))
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(reSpacesGlobal.ReplaceAllString(lines[i], " "))
 		if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "<<") || strings.HasPrefix(trimmed, ">>") {
 			continue
+		}
+		if trimmed == "•" || trimmed == "-" || trimmed == "*" || trimmed == "◦" || trimmed == "▪" {
+			// If this line is an isolated bullet symbol, merge it with the next non-empty line as a markdown bullet
+			merged := false
+			for k := i + 1; k < len(lines); k++ {
+				nextTrimmed := strings.TrimSpace(reSpacesGlobal.ReplaceAllString(lines[k], " "))
+				if len(nextTrimmed) > 0 {
+					cleanLines = append(cleanLines, "- "+nextTrimmed)
+					i = k // Advance past the merged line
+					merged = true
+					break
+				}
+			}
+			if merged {
+				continue
+			}
+		}
+		if strings.HasPrefix(trimmed, "• ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "◦ ") || strings.HasPrefix(trimmed, "▪ ") {
+			trimmed = "- " + strings.TrimSpace(trimmed[2:])
 		}
 		if len(trimmed) > 0 {
 			cleanLines = append(cleanLines, trimmed)
