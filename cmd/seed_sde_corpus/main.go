@@ -225,7 +225,7 @@ func main() {
 	fmt.Printf("⏱️ Ingestion Time: %v (%.2f docs/sec)\n", duration, float64(totalIngested)/duration.Seconds())
 
 	// Print Corpus Statistics
-	totalDocs, avgLen, vocabSize := index.GlobalEngine.Inverted.GetStats()
+	totalDocs, avgLen, vocabSize := index.GlobalEngine.GetInvertedIndex().GetStats()
 	fmt.Printf("\n📈 Corpus Metadata & Indexing Statistics:\n")
 	fmt.Printf("   - Total Indexed Documents: %d\n", totalDocs)
 	fmt.Printf("   - Average Document Length: %.2f tokens\n", avgLen)
@@ -243,7 +243,7 @@ func main() {
 	fmt.Printf("\n🔍 Testing Hybrid RRF Search Across 1,000+ SDE Corpus Pages:\n")
 	for _, q := range testQueries {
 		titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
-		bm25Hits := index.GlobalEngine.Inverted.RankDocuments(q, titles, urls, bodies, 10)
+		bm25Hits := index.GlobalEngine.SearchBM25(q, 10)
 
 		// 2. Dense Vector
 		vecHits := index.GlobalEngine.SearchVector(q, 10)

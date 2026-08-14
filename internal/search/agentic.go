@@ -160,7 +160,7 @@ func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest)
 	if err != nil || len(hits) == 0 {
 		// Fallback to local index
 		titles, urls, bodies := p.engine.GetMetadataMaps()
-		bm25Hits := p.engine.Inverted.RankDocuments(query, titles, urls, bodies, topK)
+		bm25Hits := p.engine.SearchBM25(query, topK)
 		vecHits := p.engine.SearchVector(query, topK)
 		hits = ReciprocalRankFusion(query, bm25Hits, vecHits, topK, titles, urls, bodies)
 	}

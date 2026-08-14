@@ -90,4 +90,45 @@ func TestTenantQuotaLimiter(t *testing.T) {
 	if limiter.GetTokensUsed("tenant_a") != 1500 {
 		t.Errorf("expected 1500 tokens recorded, got %d", limiter.GetTokensUsed("tenant_a"))
 	}
+
+	// Advance time past 1 minute window reset
+	limiter.lastReset = time.Now().Add(-2 * time.Minute)
+
+	// Call Allow which triggers window reset
+	if !limiter.Allow("tenant_a", 2) {
+		t.Error("expected request to be allowed after rate limit reset")
+	}
+
+	// Verify token count was NOT wiped
+	if limiter.GetTokensUsed("tenant_a") != 1500 {
+		t.Errorf("expected token count 1500 to be preserved across window reset, got %d", limiter.GetTokensUsed("tenant_a"))
+	}
 }
+
+func TestTenantMiddleware_NonJWTBearerTokenPassThrough(t *testing.T) {
+	calledNext := false
+	handler := TenantMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calledNext = true
+		tc, ok := GetTenantFromContext(r.Context())
+		if !ok || tc.TenantID != "custom_tenant" {
+			t.Errorf("expected tenant_id 'custom_tenant', got '%s'", tc.TenantID)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Send standard API key (non-3-part JWT) in Authorization Bearer header
+	req := httptest.NewRequest("GET", "/v1/search", nil)
+	req.Header.Set("Authorization", "Bearer my_opaque_api_key_12345")
+	req.Header.Set("X-Tenant-ID", "custom_tenant")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if !calledNext {
+		t.Fatalf("expected downstream handler to be called for non-JWT bearer token")
+	}
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected HTTP 200 OK, got %d", rr.Code)
+	}
+}
+

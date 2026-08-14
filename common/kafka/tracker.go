@@ -33,6 +33,29 @@ func (ot *OffsetTracker) MarkStarted(msg skafka.Message) {
 	ot.inFlight[p][msg.Offset] = true
 }
 
+// MarkFailed removes in-flight and completed offsets for a failed message so it does not trap contiguous commits.
+func (ot *OffsetTracker) MarkFailed(msg skafka.Message) {
+	ot.mu.Lock()
+	defer ot.mu.Unlock()
+
+	p := msg.Partition
+	if ot.inFlight[p] != nil {
+		delete(ot.inFlight[p], msg.Offset)
+	}
+	if ot.completed[p] != nil {
+		delete(ot.completed[p], msg.Offset)
+	}
+}
+
+// RevokePartition removes all in-flight and completed offsets for a revoked partition.
+func (ot *OffsetTracker) RevokePartition(partition int) {
+	ot.mu.Lock()
+	defer ot.mu.Unlock()
+
+	delete(ot.inFlight, partition)
+	delete(ot.completed, partition)
+}
+
 type Committer interface {
 	Commit(ctx context.Context, msg skafka.Message) error
 }
@@ -40,6 +63,7 @@ type Committer interface {
 // MarkCompleted buffers completed offset messages per partition and commits
 // only contiguous, sequential completed message chains to Kafka.
 // This prevents out-of-order commits from advancing partition offsets past incomplete messages.
+// Offsets are only evicted from completed buffer after commit succeeds, allowing retries on error.
 func (ot *OffsetTracker) MarkCompleted(ctx context.Context, consumer Committer, msg skafka.Message) error {
 	ot.mu.Lock()
 
@@ -74,18 +98,23 @@ func (ot *OffsetTracker) MarkCompleted(ctx context.Context, consumer Committer, 
 		}
 	}
 
-	if toCommit != nil {
-		for offset := range ot.completed[p] {
-			if offset <= maxCompleted {
-				delete(ot.completed[p], offset)
-			}
-		}
-	}
-
 	ot.mu.Unlock()
 
 	if toCommit != nil {
-		return consumer.Commit(ctx, *toCommit)
+		err := consumer.Commit(ctx, *toCommit)
+		if err != nil {
+			return err
+		}
+
+		ot.mu.Lock()
+		if ot.completed[p] != nil {
+			for offset := range ot.completed[p] {
+				if offset <= maxCompleted {
+					delete(ot.completed[p], offset)
+				}
+			}
+		}
+		ot.mu.Unlock()
 	}
 	return nil
 }

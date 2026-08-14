@@ -412,14 +412,7 @@ func (h *AgentHandler) AgentQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
-	bm25Hits := index.RankDocuments(
-		req.Query,
-		index.GlobalEngine.Inverted,
-		titles,
-		urls,
-		bodies,
-		req.TopK*2,
-	)
+	bm25Hits := index.GlobalEngine.SearchBM25(req.Query, req.TopK*2)
 
 	vecHits := index.GlobalEngine.SearchVector(req.Query, req.TopK*2)
 

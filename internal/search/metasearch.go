@@ -190,7 +190,7 @@ func (a *MetasearchAdapter) executeMetasearch(ctx context.Context, query string,
 	}
 
 	titles, urls, bodies := a.engine.GetMetadataMaps()
-	bm25Hits := a.engine.Inverted.RankDocuments(query, titles, urls, bodies, topK*2)
+	bm25Hits := a.engine.SearchBM25(query, topK*2)
 	vectorHits := a.engine.SearchVector(query, topK*2)
 
 	hits := ReciprocalRankFusion(query, bm25Hits, vectorHits, topK, titles, urls, bodies)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -283,3 +284,80 @@ func TestVectorIndex_DeleteVector(t *testing.T) {
 		t.Errorf("Expected 0 results after deleting doc1, got %d", len(resAfter))
 	}
 }
+
+func TestLoadFromDB_IncrementalMergePreservesNewDocs(t *testing.T) {
+	eng := NewEngine()
+
+	// 1. Index an in-memory document directly
+	eng.IndexDocumentDirectly("https://inmemory.example.com", "In-Memory Title", "Unique content stored only in memory", 6)
+
+	// 2. Save a different document to DB / storage
+	ctx := context.Background()
+	_ = storage.SaveCrawledDocument(ctx, "https://db.example.com", "DB Title", "Persisted content loaded from storage layer", 6, "web_crawled", "https://db.example.com")
+
+	// 3. Run LoadFromDB
+	err := eng.LoadFromDB(ctx)
+	if err != nil {
+		t.Fatalf("LoadFromDB failed: %v", err)
+	}
+
+	// 4. Verify BOTH in-memory and DB documents exist and are searchable via SearchBM25
+	memHits := eng.SearchBM25("Unique content", 5)
+	if len(memHits) == 0 || memHits[0].DocID != "https://inmemory.example.com" {
+		t.Errorf("expected in-memory document to be preserved after LoadFromDB, got hits: %v", memHits)
+	}
+
+	dbHits := eng.SearchBM25("Persisted content", 5)
+	if len(dbHits) == 0 || dbHits[0].DocID != "https://db.example.com" {
+		t.Errorf("expected DB document to be loaded and indexed, got hits: %v", dbHits)
+	}
+}
+
+func TestEngine_ThreadSafeAccessors(t *testing.T) {
+	eng := NewEngine()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// Writer goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				i++
+				docURL := "https://example.com/doc" + string(rune('a'+i%26))
+				eng.IndexDocumentDirectly(docURL, "Concurrent Title", "Concurrent document body test indexing", 5)
+				time.Sleep(1 * time.Millisecond)
+			}
+		}
+	}()
+
+	// Reader goroutines accessing SearchBM25, GetInvertedIndex, GetTrie, GetVectorIndex
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					_ = eng.SearchBM25("concurrent test", 5)
+					_, _, _ = eng.GetInvertedIndex().GetStats()
+					_ = eng.GetTrie().SearchPrefix("co", 5)
+					_ = eng.GetVectorIndex().SearchNearest([]float64{0.1, 0.2, 0.3}, 5)
+					time.Sleep(1 * time.Millisecond)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+

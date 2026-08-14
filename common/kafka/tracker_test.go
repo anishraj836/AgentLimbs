@@ -58,3 +58,86 @@ func TestOffsetTrackerContiguous(t *testing.T) {
 		t.Errorf("expected commit of offset 12, got %v", consumer.committed)
 	}
 }
+
+type failingCommitter struct {
+	committed []int64
+	failCount int
+	calls     int
+}
+
+func (m *failingCommitter) Commit(ctx context.Context, msg skafka.Message) error {
+	m.calls++
+	if m.calls <= m.failCount {
+		return context.DeadlineExceeded
+	}
+	m.committed = append(m.committed, msg.Offset)
+	return nil
+}
+
+func TestOffsetTrackerCommitErrorRetry(t *testing.T) {
+	ot := NewOffsetTracker()
+	consumer := &failingCommitter{failCount: 1} // Fails first commit, succeeds second
+
+	msg1 := skafka.Message{Partition: 0, Offset: 1}
+	msg2 := skafka.Message{Partition: 0, Offset: 2}
+
+	ot.MarkStarted(msg1)
+	ot.MarkStarted(msg2)
+
+	// First commit fails
+	err := ot.MarkCompleted(context.Background(), consumer, msg1)
+	if err == nil {
+		t.Fatalf("expected error from failing committer, got nil")
+	}
+	if len(consumer.committed) != 0 {
+		t.Errorf("expected no successful commit, got %v", consumer.committed)
+	}
+
+	// Next completion should retry offset 1 along with offset 2
+	err = ot.MarkCompleted(context.Background(), consumer, msg2)
+	if err != nil {
+		t.Fatalf("expected second commit to succeed, got error: %v", err)
+	}
+	if len(consumer.committed) != 1 || consumer.committed[0] != 2 {
+		t.Errorf("expected commit of offset 2 on retry, got %v", consumer.committed)
+	}
+}
+
+func TestOffsetTrackerMarkFailed(t *testing.T) {
+	ot := NewOffsetTracker()
+	consumer := &mockCommitter{}
+
+	msg1 := skafka.Message{Partition: 0, Offset: 1}
+	msg2 := skafka.Message{Partition: 0, Offset: 2}
+
+	ot.MarkStarted(msg1)
+	ot.MarkStarted(msg2)
+
+	// msg1 fails (e.g. panic or unmarshal error)
+	ot.MarkFailed(msg1)
+
+	// msg2 completes; since msg1 failed and was removed from in-flight, msg2 can commit
+	err := ot.MarkCompleted(context.Background(), consumer, msg2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(consumer.committed) != 1 || consumer.committed[0] != 2 {
+		t.Errorf("expected commit of offset 2 after msg1 marked failed, got %v", consumer.committed)
+	}
+}
+
+func TestOffsetTrackerRevokePartition(t *testing.T) {
+	ot := NewOffsetTracker()
+
+	msg1 := skafka.Message{Partition: 3, Offset: 100}
+	ot.MarkStarted(msg1)
+
+	ot.RevokePartition(3)
+
+	ot.mu.Lock()
+	if ot.inFlight[3] != nil || ot.completed[3] != nil {
+		t.Errorf("expected partition 3 to be cleared after revoke")
+	}
+	ot.mu.Unlock()
+}
+

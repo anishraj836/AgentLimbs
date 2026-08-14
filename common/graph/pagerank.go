@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"math"
 	"sync"
 )
 
@@ -41,7 +40,7 @@ func (g *WebGraph) AddLink(srcURL, dstURL string) {
 }
 
 // ComputePageRank calculates Google PageRank scores using power iteration.
-// PR(A) = (1-d)/N + d * sum(PR(T_i) / OutLinks(T_i))
+// PR(A) = (1-d)/N + d * (sum(PR(T_i) / OutLinks(T_i)) + DanglingSum / N)
 func (g *WebGraph) ComputePageRank(dampingFactor float64, iterations int) map[string]float64 {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -59,6 +58,13 @@ func (g *WebGraph) ComputePageRank(dampingFactor float64, iterations int) map[st
 	}
 
 	for it := 0; it < iterations; it++ {
+		var danglingSum float64
+		for node := range g.nodes {
+			if len(g.outLinks[node]) == 0 {
+				danglingSum += ranks[node]
+			}
+		}
+
 		newRanks := make(map[string]float64)
 
 		for node := range g.nodes {
@@ -70,15 +76,10 @@ func (g *WebGraph) ComputePageRank(dampingFactor float64, iterations int) map[st
 				}
 			}
 
-			newRanks[node] = ((1.0 - dampingFactor) / float64(N)) + (dampingFactor * incomingSum)
+			newRanks[node] = ((1.0 - dampingFactor) / float64(N)) + (dampingFactor * (incomingSum + (danglingSum / float64(N))))
 		}
 
 		ranks = newRanks
-	}
-
-	// Normalize scores
-	for node := range ranks {
-		ranks[node] = math.Round(ranks[node]*10000) / 10000
 	}
 
 	return ranks

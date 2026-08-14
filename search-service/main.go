@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -50,11 +51,14 @@ func main() {
 		}
 	}
 
+	var kafkaWg sync.WaitGroup
 	if len(kafkaBrokers) > 0 {
 		consumer := kafka.NewConsumer(kafkaBrokers, "search-group", "index_updates")
 		defer consumer.Close()
 
+		kafkaWg.Add(1)
 		go func() {
+			defer kafkaWg.Done()
 			for {
 				msg, err := consumer.ReadMessage(ctx)
 				if err != nil {
@@ -72,14 +76,20 @@ func main() {
 				}
 
 				if targetURL != "" && targetURL != "indexed" {
-					if err := index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, targetURL); err != nil {
+					if err := index.GlobalEngine.IndexDocumentIncrementalByURL(context.Background(), targetURL); err != nil {
 						logger.Log.Error("Failed to incrementally index URL on index_updates event", zap.String("url", targetURL), zap.Error(err))
 					} else {
 						logger.Log.Info("Successfully incrementally indexed document via index_updates event", zap.String("url", targetURL))
 					}
 				}
 
-				if err := consumer.Commit(ctx, msg); err != nil {
+				commitCtx := ctx
+				if ctx.Err() != nil {
+					var cancelCommit context.CancelFunc
+					commitCtx, cancelCommit = context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancelCommit()
+				}
+				if err := consumer.Commit(commitCtx, msg); err != nil {
 					logger.Log.Error("Failed to commit offset for index_updates message", zap.Error(err))
 				}
 			}
@@ -135,4 +145,5 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Log.Error("Search Service forced to shutdown", zap.Error(err))
 	}
+	kafkaWg.Wait()
 }

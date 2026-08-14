@@ -93,14 +93,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 
 	fetchK := req.Offset + req.Limit
 	titles, urls, bodies := h.engine.GetMetadataMaps()
-	bm25Hits := h.engine.Inverted.RankDocuments(
-		req.Query,
-		titles,
-		urls,
-		bodies,
-		fetchK,
-	)
-
+	bm25Hits := h.engine.SearchBM25(req.Query, fetchK)
 	vecHits := h.engine.SearchVector(req.Query, fetchK)
 
 	fusedHits := search.ReciprocalRankFusion(req.Query, bm25Hits, vecHits, fetchK, titles, urls, bodies)
@@ -157,7 +150,7 @@ func (h *SearchHandler) Autocomplete(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	results := h.engine.Trie.SearchPrefix(prefix, limit)
+	results := h.engine.GetTrie().SearchPrefix(prefix, limit)
 	if results == nil {
 		results = make([]index.AutocompleteResult, 0)
 	}
@@ -200,8 +193,8 @@ func (h *SearchHandler) GetDocument(w http.ResponseWriter, r *http.Request) {
 
 func (h *SearchHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	if !checkAuth(w, r) { return }
-	totalDocs, avgDocLen, vocabSize := h.engine.Inverted.GetStats()
-	trieNodeCount := h.engine.Trie.NodeCount()
+	totalDocs, avgDocLen, vocabSize := h.engine.GetInvertedIndex().GetStats()
+	trieNodeCount := h.engine.GetTrie().NodeCount()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

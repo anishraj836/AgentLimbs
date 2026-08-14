@@ -132,7 +132,6 @@ func (l *TenantQuotaLimiter) Allow(tenantID string, maxReqs int) bool {
 
 	if time.Since(l.lastReset) > time.Minute {
 		l.requests = make(map[string]int)
-		l.tokenCounts = make(map[string]int64) // Periodic window reset to prevent memory leak
 		l.lastReset = time.Now()
 	}
 
@@ -175,19 +174,24 @@ func TenantMiddleware(next http.Handler) http.Handler {
 
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
-			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-			claims, err := ParseJWT(tokenStr, GetJWTSecret())
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("WWW-Authenticate", `Bearer realm="AgentLimbs"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"Unauthorized: Invalid JWT token: %v"}`, err)))
-				return
-			}
-			if claims.TenantID != "" {
-				tenantID = claims.TenantID
-				planType = claims.PlanType
-				role = claims.Role
+			tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+			parts := strings.Split(tokenStr, ".")
+			if len(parts) == 3 {
+				claims, err := ParseJWT(tokenStr, GetJWTSecret())
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("WWW-Authenticate", `Bearer realm="AgentLimbs"`)
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"Unauthorized: Invalid JWT token: %v"}`, err)))
+					return
+				}
+				if claims.TenantID != "" {
+					tenantID = claims.TenantID
+					planType = claims.PlanType
+					role = claims.Role
+				}
+			} else if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
+				tenantID = headerTenant
 			}
 		} else if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
 			tenantID = headerTenant

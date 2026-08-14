@@ -1,7 +1,11 @@
 package sitemap
 
 import (
+	"bytes"
 	"encoding/xml"
+	"fmt"
+	"io"
+	"net/url"
 	"strings"
 )
 
@@ -24,35 +28,98 @@ type SitemapLoc struct {
 	Loc string `xml:"loc"`
 }
 
-// ParseSitemapXML parses sitemap.xml bytes and returns all canonical URLs or child sitemap URLs.
+const MaxSitemapSize = 50 * 1024 * 1024 // 50MB bounded limit
+
+// ParseSitemapXML parses sitemap.xml bytes using a streaming decoder and returns canonical URLs or child sitemap URLs.
 func ParseSitemapXML(xmlBytes []byte) ([]string, error) {
-	var urlset URLSet
-	if err := xml.Unmarshal(xmlBytes, &urlset); err == nil && len(urlset.URLs) > 0 {
-		var urls []string
-		for _, u := range urlset.URLs {
-			loc := strings.TrimSpace(u.Loc)
-			if loc != "" {
-				urls = append(urls, loc)
+	if len(xmlBytes) == 0 {
+		return nil, fmt.Errorf("empty sitemap xml")
+	}
+	return ParseSitemapReader(bytes.NewReader(xmlBytes))
+}
+
+// ParseSitemapReader parses sitemap XML from an io.Reader using a bounded streaming xml.Decoder.
+func ParseSitemapReader(r io.Reader) ([]string, error) {
+	if r == nil {
+		return nil, fmt.Errorf("nil reader provided")
+	}
+
+	limited := io.LimitReader(r, MaxSitemapSize)
+	decoder := xml.NewDecoder(limited)
+
+	var urls []string
+	var foundRoot bool
+	var rootName string
+
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if err == io.EOF {
+				break
 			}
+			return nil, fmt.Errorf("malformed sitemap XML: %w", err)
 		}
-		if len(urls) > 0 {
-			return urls, nil
+
+		switch elem := token.(type) {
+		case xml.StartElement:
+			local := strings.ToLower(elem.Name.Local)
+			if !foundRoot {
+				foundRoot = true
+				rootName = local
+				if rootName != "urlset" && rootName != "sitemapindex" {
+					return nil, fmt.Errorf("invalid sitemap root element '%s', expected 'urlset' or 'sitemapindex'", elem.Name.Local)
+				}
+				continue
+			}
+
+			if rootName == "urlset" && local == "url" {
+				var u URL
+				if err := decoder.DecodeElement(&u, &elem); err != nil {
+					return nil, fmt.Errorf("failed to decode url element: %w", err)
+				}
+				cleanURL, ok := sanitizeURL(u.Loc)
+				if ok {
+					urls = append(urls, cleanURL)
+				}
+			} else if rootName == "sitemapindex" && local == "sitemap" {
+				var s SitemapLoc
+				if err := decoder.DecodeElement(&s, &elem); err != nil {
+					return nil, fmt.Errorf("failed to decode sitemap element: %w", err)
+				}
+				cleanURL, ok := sanitizeURL(s.Loc)
+				if ok {
+					urls = append(urls, cleanURL)
+				}
+			}
 		}
 	}
 
-	var sitemapIndex SitemapIndex
-	if err := xml.Unmarshal(xmlBytes, &sitemapIndex); err == nil && len(sitemapIndex.Sitemaps) > 0 {
-		var urls []string
-		for _, s := range sitemapIndex.Sitemaps {
-			loc := strings.TrimSpace(s.Loc)
-			if loc != "" {
-				urls = append(urls, loc)
-			}
-		}
-		if len(urls) > 0 {
-			return urls, nil
-		}
+	if !foundRoot {
+		return nil, fmt.Errorf("empty or invalid sitemap XML: no root element found")
 	}
 
-	return nil, nil
+	return urls, nil
+}
+
+func sanitizeURL(rawURL string) (string, bool) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return "", false
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", false
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+
+	if parsed.Host == "" {
+		return "", false
+	}
+
+	return parsed.String(), true
 }

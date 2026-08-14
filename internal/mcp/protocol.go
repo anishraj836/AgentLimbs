@@ -367,11 +367,8 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) (respBytes []byte, err
 				break
 			}
 
-			bm25Hits := index.GlobalEngine.Inverted.RankDocuments(
+			bm25Hits := index.GlobalEngine.SearchBM25(
 				query,
-				titles,
-				urls,
-				bodies,
 				fetchK,
 			)
 			vectorHits := index.GlobalEngine.SearchVector(query, fetchK)

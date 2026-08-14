@@ -76,38 +76,47 @@ func main() {
 			go func(m ckafka.Message) {
 				defer wg.Done()
 				defer func() { <-sem }()
+
+				var succeeded bool
 				defer func() {
 					if r := recover(); r != nil {
 						logger.Log.Error("Panic isolated in indexer worker", zap.Any("recover", r))
+					}
+					if succeeded {
+						commitCtx := ctx
+						if ctx.Err() != nil {
+							var cancelCommit context.CancelFunc
+							commitCtx, cancelCommit = context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancelCommit()
+						}
+						if err := offsetTracker.MarkCompleted(commitCtx, consumer, m); err != nil {
+							logger.Log.Error("Failed to mark offset completed", zap.Error(err), zap.Int64("offset", m.Offset))
+						}
+					} else {
+						offsetTracker.MarkFailed(m)
 					}
 				}()
 
 				var tokenizedDoc TokenizedDocument
 				if err := json.Unmarshal(m.Value, &tokenizedDoc); err != nil {
 					logger.Log.Error("Failed to unmarshal tokenized document", zap.Error(err))
-				} else {
-					index.GlobalEngine.IndexDocument(
-						tokenizedDoc.URL,
-						tokenizedDoc.Title,
-						tokenizedDoc.CleanBody,
-						tokenizedDoc.TermPositions,
-						tokenizedDoc.TotalTokens,
-					)
-					logger.Log.Info("Successfully indexed document",
-						zap.String("url", tokenizedDoc.URL),
-						zap.Int("unique_terms", len(tokenizedDoc.TermPositions)))
-
-					// Publish index update notification
-					producer.Publish(ctx, []byte(tokenizedDoc.URL), []byte("indexed"))
+					return
 				}
 
-				commitCtx := ctx
-				if ctx.Err() != nil {
-					var cancelCommit context.CancelFunc
-					commitCtx, cancelCommit = context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancelCommit()
-				}
-				offsetTracker.MarkCompleted(commitCtx, consumer, m)
+				index.GlobalEngine.IndexDocument(
+					tokenizedDoc.URL,
+					tokenizedDoc.Title,
+					tokenizedDoc.CleanBody,
+					tokenizedDoc.TermPositions,
+					tokenizedDoc.TotalTokens,
+				)
+				logger.Log.Info("Successfully indexed document",
+					zap.String("url", tokenizedDoc.URL),
+					zap.Int("unique_terms", len(tokenizedDoc.TermPositions)))
+
+				// Publish index update notification
+				producer.Publish(ctx, []byte(tokenizedDoc.URL), []byte("indexed"))
+				succeeded = true
 			}(msg)
 		}
 	}()
