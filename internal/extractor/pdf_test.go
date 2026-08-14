@@ -209,19 +209,25 @@ func TestPDFTextPositioning_Operators(t *testing.T) {
 }
 
 func TestPDFLigatureDecomposition(t *testing.T) {
-	// TeX ligatures: \x0b (ff), \x0c / \f (fi), \x0d (fl), \x0e (ffi), \x0f (ffl)
+	// TeX OT1 ligatures: \x0b (ff), \x0c / \f (fi), \x0d (fl), \x0e (ffi), \x0f (ffl)
+	// TeX T1 ligatures: \x1b (ff), \x1c (fi), \x1d (fl), \x1e (ffi), \x1f (ffl)
 	// Unicode ligatures: \uFB00 (ff), \uFB01 (fi), \uFB02 (fl), \uFB03 (ffi), \uFB04 (ffl)
 	testCases := []struct {
 		input    string
 		expected string
 	}{
 		{"\x0crmly", "firmly"},
+		{"\x1crmly", "firmly"},
 		{"\uFB01rmly", "firmly"},
 		{"speci\x0ccally", "specifically"},
+		{"speci\x1ccally", "specifically"},
 		{"speci\uFB01cally", "specifically"},
 		{"di\x0bicult", "difficult"},
+		{"di\x1bicult", "difficult"},
 		{"e\x0ecient", "efficient"},
+		{"e\x1ecient", "efficient"},
 		{"\x0dow", "flow"},
+		{"\x1dow", "flow"},
 		{"\uFB02ow", "flow"},
 		{"o\uFB03ce", "office"},
 		{"wa\uFB04e", "waffle"},
@@ -235,17 +241,26 @@ func TestPDFLigatureDecomposition(t *testing.T) {
 		}
 	}
 
-	// Verify cleanExtractedPDFText restores ligatures and preserves "Transformer" without turning \f into newline
-	rawText := "The Transformer architecture operates \uFB01rmly and e\x0eciently across all NLP tasks."
-	cleaned := cleanExtractedPDFText(rawText)
-	if !strings.Contains(cleaned, "Transformer") {
-		t.Errorf("Expected 'Transformer' in cleaned text, got %q", cleaned)
+	// Verify repairCommonMissingLigatures handles dropped ligatures from custom PDF encodings
+	droppedLigatures := "The model has been rmly established, demonstrating high efciency, signicant gains, and resolving difcult sequence tasks eectively with the Transformer."
+	repaired := cleanExtractedPDFText(droppedLigatures)
+	if !strings.Contains(repaired, "firmly") {
+		t.Errorf("Expected 'firmly' in repaired text, got %q", repaired)
 	}
-	if !strings.Contains(cleaned, "firmly") {
-		t.Errorf("Expected 'firmly' in cleaned text, got %q", cleaned)
+	if !strings.Contains(repaired, "efficiency") {
+		t.Errorf("Expected 'efficiency' in repaired text, got %q", repaired)
 	}
-	if !strings.Contains(cleaned, "efficiently") {
-		t.Errorf("Expected 'efficiently' in cleaned text, got %q", cleaned)
+	if !strings.Contains(repaired, "significant") {
+		t.Errorf("Expected 'significant' in repaired text, got %q", repaired)
+	}
+	if !strings.Contains(repaired, "difficult") {
+		t.Errorf("Expected 'difficult' in repaired text, got %q", repaired)
+	}
+	if !strings.Contains(repaired, "effectively") {
+		t.Errorf("Expected 'effectively' in repaired text, got %q", repaired)
+	}
+	if !strings.Contains(repaired, "Transformer") {
+		t.Errorf("Expected 'Transformer' in repaired text, got %q", repaired)
 	}
 }
 
@@ -261,7 +276,7 @@ func TestPDFHyphenationAndWhitespaceCleanup(t *testing.T) {
 func TestPDFTitleExtraction_ArXivAndMetadata(t *testing.T) {
 	// 1. Info dictionary /Title (...)
 	pdfInfoLiteral := []byte("%PDF-1.4\n1 0 obj\n<< /Title (Deep Residual Learning) >>\nendobj\ntrailer\n<< /Info 1 0 R >>\n%%EOF")
-	title1 := extractPDFTitle(pdfInfoLiteral)
+	title1 := extractPDFMetadataTitle(pdfInfoLiteral)
 	if title1 != "Deep Residual Learning" {
 		t.Errorf("Expected title 'Deep Residual Learning', got %q", title1)
 	}
@@ -269,7 +284,7 @@ func TestPDFTitleExtraction_ArXivAndMetadata(t *testing.T) {
 	// 2. Info dictionary /Title <hex UTF-16BE>
 	// "Attention" in UTF-16BE: FE FF 00 41 00 74 00 74 00 65 00 6E 00 74 00 69 00 6F 00 6E
 	pdfInfoHex := []byte("%PDF-1.4\n1 0 obj\n<< /Title <FEFF0041007400740065006E00740069006F006E> >>\nendobj\ntrailer\n<< /Info 1 0 R >>\n%%EOF")
-	title2 := extractPDFTitle(pdfInfoHex)
+	title2 := extractPDFMetadataTitle(pdfInfoHex)
 	if title2 != "Attention" {
 		t.Errorf("Expected title 'Attention', got %q", title2)
 	}
@@ -295,13 +310,13 @@ endobj
 trailer
 << /Root 1 0 R >>
 %%EOF`)
-	title3 := extractPDFTitle(pdfXMP)
+	title3 := extractPDFMetadataTitle(pdfXMP)
 	if title3 != "BERT: Pre-training of Deep Bidirectional Transformers" {
 		t.Errorf("Expected XMP title, got %q", title3)
 	}
 
-	// 4. arXiv-style PDF stream with generic or empty metadata title
-	// Must extract "Attention Is All You Need" from first page text before "Abstract" / "Author"
+	// 4. Figure asset title rejection test
+	// If a PDF contains an embedded figure with /Title (making_more_difficult5_new), it MUST be rejected in favor of the real paper title
 	streamContent := `
 BT /F1 12 Tf
 (arXiv:1706.03762v7 [cs.CL] 2 Aug 2023) Tj T*
@@ -313,15 +328,15 @@ BT /F1 12 Tf
 (The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder. The best performing models also connect the encoder and decoder through an attention mechanism. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.) Tj
 ET`
 
-	pdfArXiv := fmt.Sprintf("%%PDF-1.4\n1 0 obj\n<< /Title (untitled) >>\nendobj\n2 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\ntrailer\n<< /Root 2 0 R /Info 1 0 R >>\n%%%%EOF", len(streamContent), streamContent)
+	pdfArXivWithFigure := fmt.Sprintf("%%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Form /Title (making_more_difficult5_new) >>\nendobj\n2 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\ntrailer\n<< /Root 2 0 R >>\n%%%%EOF", len(streamContent), streamContent)
 
-	text, docTitle, err := ExtractTextFromPDF([]byte(pdfArXiv))
+	text, docTitle, err := ExtractTextFromPDF([]byte(pdfArXivWithFigure))
 	if err != nil {
 		t.Fatalf("ExtractTextFromPDF error: %v", err)
 	}
 
 	if docTitle != "Attention Is All You Need" {
-		t.Errorf("Expected document title 'Attention Is All You Need', got %q", docTitle)
+		t.Errorf("Expected document title 'Attention Is All You Need', got %q (figure asset was not rejected!)", docTitle)
 	}
 
 	if !strings.Contains(text, "Attention Is All You Need") {

@@ -50,8 +50,6 @@ func ExtractTextFromPDF(pdfBytes []byte) (text string, title string, err error) 
 		return "", "", errors.New("invalid PDF content: missing %PDF- header")
 	}
 
-	title = extractPDFTitle(pdfBytes)
-
 	var textParts []string
 	streams := extractPDFStreams(pdfBytes)
 
@@ -82,8 +80,15 @@ func ExtractTextFromPDF(pdfBytes []byte) (text string, title string, err error) 
 		return "", "", fmt.Errorf("PDF text extraction error: extracted text contains fewer than 15 words (%d words found, scanned image or encrypted PDF)", len(words))
 	}
 
+	// Strategy 1: Extract prominent document title from first page text before "Abstract" / "1 Introduction"
+	title = extractTitleFromCleanedText(cleanedText)
+
+	// Strategy 2: If text didn't yield a title, inspect /Info metadata and XMP streams
 	if title == "" || isGenericTitle(title) {
-		title = extractTitleFromCleanedText(cleanedText)
+		metaTitle := extractPDFMetadataTitle(pdfBytes)
+		if metaTitle != "" && !isGenericTitle(metaTitle) {
+			title = metaTitle
+		}
 	}
 
 	if title == "" || isGenericTitle(title) {
@@ -111,7 +116,17 @@ func isGenericTitle(t string) bool {
 		strings.HasPrefix(lower, "powerpoint -") {
 		return true
 	}
-	if strings.HasSuffix(lower, ".pdf") || strings.HasSuffix(lower, ".docx") {
+	if strings.HasSuffix(lower, ".pdf") || strings.HasSuffix(lower, ".docx") ||
+		strings.HasSuffix(lower, ".eps") || strings.HasSuffix(lower, ".png") ||
+		strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") ||
+		strings.HasSuffix(lower, ".tex") {
+		return true
+	}
+	// Reject figure / graphic asset identifiers containing underscores or file fragments
+	if strings.Contains(t, "_") && !strings.Contains(t, " ") {
+		return true
+	}
+	if regexp.MustCompile(`(?i)(figure|fig|image|asset|chart|plot|graphic|diagram)[0-9_]`).MatchString(t) {
 		return true
 	}
 	return false
@@ -150,7 +165,13 @@ func extractTitleFromCleanedText(cleanedText string) string {
 		lower := strings.ToLower(trimmed)
 		if strings.Contains(lower, "@") || strings.Contains(lower, "department of") ||
 			strings.Contains(lower, "university") || strings.Contains(lower, "laboratory") ||
-			strings.Contains(lower, "institute") {
+			strings.Contains(lower, "institute") || strings.Contains(lower, "google research") ||
+			strings.Contains(lower, "google brain") {
+			continue
+		}
+
+		// Reject lines that look like figure captions or figure references
+		if strings.HasPrefix(lower, "figure ") || strings.HasPrefix(lower, "fig. ") || strings.HasPrefix(lower, "table ") {
 			continue
 		}
 
@@ -170,46 +191,36 @@ func extractTitleFromCleanedText(cleanedText string) string {
 	return ""
 }
 
-func extractPDFTitle(pdfBytes []byte) string {
-	// 1. Check /Info dictionary /Title (...)
-	reLiteral := regexp.MustCompile(`/Title\s*\(((?:[^\)\\]|\\.)*)\)`)
-	if match := reLiteral.FindSubmatch(pdfBytes); len(match) > 1 {
-		t := parsePDFLiteralString("(" + string(match[1]) + ")")
-		t = strings.TrimSpace(t)
-		if len(t) > 0 && !isGenericTitle(t) {
-			return t
+func extractPDFMetadataTitle(pdfBytes []byte) string {
+	// 1. Check Info dictionary /Title (...)
+	reLiteral := regexp.MustCompile(`(?m)/Title\s*\(((?:[^\)\\]|\\.)*)\)`)
+	matches := reLiteral.FindAllSubmatch(pdfBytes, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			t := parsePDFLiteralString("(" + string(match[1]) + ")")
+			t = strings.TrimSpace(t)
+			if len(t) > 3 && !isGenericTitle(t) {
+				return t
+			}
 		}
 	}
 
-	// 2. Check /Info dictionary /Title <...>
-	reHex := regexp.MustCompile(`/Title\s*<([0-9a-fA-F\s]+)>`)
-	if match := reHex.FindSubmatch(pdfBytes); len(match) > 1 {
-		t := parsePDFHexString("<" + string(match[1]) + ">")
-		t = strings.TrimSpace(t)
-		if len(t) > 0 && !isGenericTitle(t) {
-			return t
+	// 2. Check Info dictionary /Title <hex>
+	reHex := regexp.MustCompile(`(?m)/Title\s*<([0-9a-fA-F\s]+)>`)
+	hexMatches := reHex.FindAllSubmatch(pdfBytes, -1)
+	for _, match := range hexMatches {
+		if len(match) > 1 {
+			t := parsePDFHexString("<" + string(match[1]) + ">")
+			t = strings.TrimSpace(t)
+			if len(t) > 3 && !isGenericTitle(t) {
+				return t
+			}
 		}
 	}
 
 	// 3. Check XMP metadata in raw bytes
 	if title := extractXMPTitle(pdfBytes); title != "" && !isGenericTitle(title) {
 		return title
-	}
-
-	// 4. Scan decompressed streams for XMP metadata or /Info
-	streams := extractPDFStreams(pdfBytes)
-	for _, s := range streams {
-		decomp := decompressPDFStream(s.dict, s.data)
-		if title := extractXMPTitle(decomp); title != "" && !isGenericTitle(title) {
-			return title
-		}
-		if match := reLiteral.FindSubmatch(decomp); len(match) > 1 {
-			t := parsePDFLiteralString("(" + string(match[1]) + ")")
-			t = strings.TrimSpace(t)
-			if len(t) > 0 && !isGenericTitle(t) {
-				return t
-			}
-		}
 	}
 
 	return ""
@@ -808,20 +819,105 @@ func parsePDFHexString(s string) string {
 
 func decomposeLigatures(s string) string {
 	r := strings.NewReplacer(
+		// Unicode presentation form ligatures
 		"\uFB00", "ff",
 		"\uFB01", "fi",
 		"\uFB02", "fl",
 		"\uFB03", "ffi",
 		"\uFB04", "ffl",
+		"\uFB05", "ft",
+		"\uFB06", "st",
+		// TeX OT1 font encoding ligatures
 		"\x0b", "ff",
 		"\x0c", "fi",
+		"\x0d", "fl",
 		"\x0e", "ffi",
 		"\x0f", "ffl",
+		// TeX T1 font encoding ligatures (standard in modern LaTeX papers)
+		"\x1b", "ff",
+		"\x1c", "fi",
+		"\x1d", "fl",
+		"\x1e", "ffi",
+		"\x1f", "ffl",
+		// LY1 font encoding ligatures
+		"\x93", "fi",
+		"\x94", "fl",
+		"\x95", "ffi",
+		"\x96", "ffl",
+		"\x97", "ff",
+		// TeX dotless i / j
+		"\x19", "i",
+		"\x1a", "j",
 	)
 	s = r.Replace(s)
-	// Replace TeX \x0d ligature ("fl")
-	s = strings.ReplaceAll(s, "\x0d", "fl")
 	return s
+}
+
+// repairCommonMissingLigatures restores missing ligatures in words where custom PDF font encodings drop ligature glyphs.
+func repairCommonMissingLigatures(text string) string {
+	type ligatureFix struct {
+		pattern *regexp.Regexp
+		replace string
+	}
+
+	fixes := []ligatureFix{
+		// fi ligatures
+		{regexp.MustCompile(`(?i)\brmly\b`), "firmly"},
+		{regexp.MustCompile(`(?i)\befcien(t|tly|cy|cies)\b`), "efficien$1"},
+		{regexp.MustCompile(`(?i)\bsignican(t|tly|ce)\b`), "significan$1"},
+		{regexp.MustCompile(`(?i)\bdifcul(t|ty|ties|tly)\b`), "difficul$1"},
+		{regexp.MustCompile(`(?i)\bspeci(c|cally|cation|cations|ed|es|y)\b`), "specifi$1"},
+		{regexp.MustCompile(`(?i)\bscientic\b`), "scientific"},
+		{regexp.MustCompile(`(?i)\barticial\b`), "artificial"},
+		{regexp.MustCompile(`(?i)\bsupercial\b`), "superficial"},
+		{regexp.MustCompile(`(?i)\bsufcien(t|tly|cy)\b`), "sufficien$1"},
+		{regexp.MustCompile(`(?i)\binsufcien(t|tly|cy)\b`), "insufficien$1"},
+		{regexp.MustCompile(`(?i)\bcoecien(t|ts)\b`), "coefficien$1"},
+		{regexp.MustCompile(`(?i)\bconic(t|ts|ted|ting)\b`), "conflic$1"},
+		{regexp.MustCompile(`(?i)\bidenti(ed|cation|cations|able|er|ers)\b`), "identifi$1"},
+		{regexp.MustCompile(`(?i)\bmodi(ed|cation|cations|er|ers|able)\b`), "modifi$1"},
+		{regexp.MustCompile(`(?i)\bclassi(ed|cation|cations|er|ers)\b`), "classifi$1"},
+		{regexp.MustCompile(`(?i)\bveri(ed|cation|cations|able|er)\b`), "verifi$1"},
+		{regexp.MustCompile(`(?i)\bjusti(ed|cation|cations|able)\b`), "justifi$1"},
+		{regexp.MustCompile(`(?i)\bnotii(ed|cation|cations)\b`), "notifi$1"},
+		{regexp.MustCompile(`(?i)\bcerti(ed|cation|cations)\b`), "certifi$1"},
+		{regexp.MustCompile(`(?i)\bden(ed|ing|ition|itions)\b`), "defin$1"},
+		{regexp.MustCompile(`(?i)\binnite(ly)?\b`), "infinite$1"},
+		{regexp.MustCompile(`(?i)\binnity\b`), "infinity"},
+		{regexp.MustCompile(`(?i)\bprole(s)?\b`), "profile$1"},
+		{regexp.MustCompile(`(?i)\bconrm(s|ed|ing|ation)?\b`), "confirm$1"},
+		{regexp.MustCompile(`(?i)\brst\b`), "first"},
+		{regexp.MustCompile(`(?i)\bgure(s)?\b`), "figure$1"},
+		{regexp.MustCompile(`(?i)\bnal(ly)?\b`), "final$1"},
+		{regexp.MustCompile(`(?i)\bnancial(ly)?\b`), "financial$1"},
+		{regexp.MustCompile(`(?i)\beld(s)?\b`), "field$1"},
+		{regexp.MustCompile(`(?i)\bqualied\b`), "qualified"},
+		{regexp.MustCompile(`(?i)\bquanti(ed|able|cation)\b`), "quantifi$1"},
+		{regexp.MustCompile(`(?i)\bsimpli(ed|cation|cations|fy)\b`), "simplifi$1"},
+
+		// ff / ffi ligatures
+		{regexp.MustCompile(`(?i)\bdieren(t|tly|ce|ces|tiate|tiation)\b`), "differen$1"},
+		{regexp.MustCompile(`(?i)\beective(ly|ness)?\b`), "effective$1"},
+		{regexp.MustCompile(`(?i)\beect(s|ed|ing)?\b`), "effect$1"},
+		{regexp.MustCompile(`(?i)\baect(s|ed|ing|ive)?\b`), "affect$1"},
+		{regexp.MustCompile(`(?i)\btrac\b`), "traffic"},
+		{regexp.MustCompile(`(?i)\boen\b`), "often"},
+		{regexp.MustCompile(`(?i)\bsuer(s|ed|ing)?\b`), "suffer$1"},
+		{regexp.MustCompile(`(?i)\boer(s|ed|ing)?\b`), "offer$1"},
+		{regexp.MustCompile(`(?i)\btransormer(s)?\b`), "transformer$1"},
+
+		// fl ligatures
+		{regexp.MustCompile(`(?i)\bight(s)?\b`), "flight$1"},
+		{regexp.MustCompile(`(?i)\bexible\b`), "flexible"},
+		{regexp.MustCompile(`(?i)\bexibility\b`), "flexibility"},
+		{regexp.MustCompile(`(?i)\buctuat(e|ed|ing|ion|ions)\b`), "fluctuat$1"},
+	}
+
+	for _, fix := range fixes {
+		text = fix.pattern.ReplaceAllString(text, fix.replace)
+	}
+
+	return text
 }
 
 func cleanExtractedPDFText(raw string) string {
@@ -842,6 +938,9 @@ func cleanExtractedPDFText(raw string) string {
 
 	reHyphenAscii := regexp.MustCompile(`(?m)(\w+)-\s*\n\s*(\w+)`)
 	text = reHyphenAscii.ReplaceAllString(text, "${1}${2}")
+
+	// Repair common dropped ligatures
+	text = repairCommonMissingLigatures(text)
 
 	reSpaces := regexp.MustCompile(`[ \t]+`)
 
