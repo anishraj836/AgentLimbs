@@ -262,6 +262,37 @@ func TestPDFLigatureDecomposition(t *testing.T) {
 	if !strings.Contains(repaired, "Transformer") {
 		t.Errorf("Expected 'Transformer' in repaired text, got %q", repaired)
 	}
+
+	// Ensure "Nal Kalchbrenner" is not corrupted to "final Kalchbrenner"
+	nalTest := cleanExtractedPDFText("Nal Kalchbrenner is finally here.")
+	if !strings.Contains(nalTest, "Nal Kalchbrenner") {
+		t.Errorf("Expected 'Nal Kalchbrenner' to be preserved, got %q", nalTest)
+	}
+	if !strings.Contains(nalTest, "finally") {
+		t.Errorf("Expected 'finally' to be preserved, got %q", nalTest)
+	}
+}
+
+func TestPDFEnDashAndBullets(t *testing.T) {
+	// Test En-Dash between numbers
+	enDashRaw := "Pages 770\x1f778 and 1735\x1e1780"
+	enDashClean := cleanExtractedPDFText(enDashRaw)
+	if !strings.Contains(enDashClean, "770–778") {
+		t.Errorf("Expected en-dash between numbers, got %q", enDashClean)
+	}
+	if !strings.Contains(enDashClean, "1735–1780") {
+		t.Errorf("Expected en-dash between numbers, got %q", enDashClean)
+	}
+
+	// Test Bullets
+	bulletRaw := "\x1f First item\n\x1e Second item"
+	bulletClean := cleanExtractedPDFText(bulletRaw)
+	if !strings.Contains(bulletClean, "- First item") {
+		t.Errorf("Expected bullet replaced with '- ', got %q", bulletClean)
+	}
+	if !strings.Contains(bulletClean, "- Second item") {
+		t.Errorf("Expected bullet replaced with '- ', got %q", bulletClean)
+	}
 }
 
 func TestPDFHyphenationAndWhitespaceCleanup(t *testing.T) {
@@ -344,5 +375,14 @@ ET`
 	}
 	if !strings.Contains(text, "Transformer") {
 		t.Errorf("Expected text to contain Transformer, got: %q", text)
+	}
+}
+
+func TestExtractTitleFromCleanedText_OutOfOrderStreams(t *testing.T) {
+	// Simulate out of order streams
+	cleanedText := "Abstract\nThis is an abstract.\nAttention Is All You Need\nAshish Vaswani"
+	title := extractTitleFromCleanedText(cleanedText)
+	if title != "Attention Is All You Need" {
+		t.Errorf("Expected 'Attention Is All You Need', got %q", title)
 	}
 }

@@ -126,6 +126,9 @@ func isGenericTitle(t string) bool {
 	if strings.Contains(t, "_") && !strings.Contains(t, " ") {
 		return true
 	}
+	if regexp.MustCompile(`(?i)^(making_more_difficult|figure|fig|image|asset|chart|plot|graphic|diagram)[\s_]*[0-9]*`).MatchString(t) {
+		return true
+	}
 	if regexp.MustCompile(`(?i)(figure|fig|image|asset|chart|plot|graphic|diagram)[0-9_]`).MatchString(t) {
 		return true
 	}
@@ -159,7 +162,7 @@ func extractTitleFromCleanedText(cleanedText string) string {
 			continue
 		}
 		if reStop.MatchString(trimmed) {
-			break
+			continue
 		}
 
 		lower := strings.ToLower(trimmed)
@@ -833,12 +836,6 @@ func decomposeLigatures(s string) string {
 		"\x0d", "fl",
 		"\x0e", "ffi",
 		"\x0f", "ffl",
-		// TeX T1 font encoding ligatures (standard in modern LaTeX papers)
-		"\x1b", "ff",
-		"\x1c", "fi",
-		"\x1d", "fl",
-		"\x1e", "ffi",
-		"\x1f", "ffl",
 		// LY1 font encoding ligatures
 		"\x93", "fi",
 		"\x94", "fl",
@@ -850,6 +847,19 @@ func decomposeLigatures(s string) string {
 		"\x1a", "j",
 	)
 	s = r.Replace(s)
+
+	// Contextual replacements for T1 ligatures
+	s = regexp.MustCompile(`(\p{L})\x1b`).ReplaceAllString(s, "${1}ff")
+	s = regexp.MustCompile(`\x1b(\p{L})`).ReplaceAllString(s, "ff${1}")
+	s = regexp.MustCompile(`(\p{L})\x1c`).ReplaceAllString(s, "${1}fi")
+	s = regexp.MustCompile(`\x1c(\p{L})`).ReplaceAllString(s, "fi${1}")
+	s = regexp.MustCompile(`(\p{L})\x1d`).ReplaceAllString(s, "${1}fl")
+	s = regexp.MustCompile(`\x1d(\p{L})`).ReplaceAllString(s, "fl${1}")
+	s = regexp.MustCompile(`(\p{L})\x1e`).ReplaceAllString(s, "${1}ffi")
+	s = regexp.MustCompile(`\x1e(\p{L})`).ReplaceAllString(s, "ffi${1}")
+	s = regexp.MustCompile(`(\p{L})\x1f`).ReplaceAllString(s, "${1}ffl")
+	s = regexp.MustCompile(`\x1f(\p{L})`).ReplaceAllString(s, "ffl${1}")
+
 	return s
 }
 
@@ -881,16 +891,11 @@ func repairCommonMissingLigatures(text string) string {
 		{regexp.MustCompile(`(?i)\bjusti(ed|cation|cations|able)\b`), "justifi$1"},
 		{regexp.MustCompile(`(?i)\bnotii(ed|cation|cations)\b`), "notifi$1"},
 		{regexp.MustCompile(`(?i)\bcerti(ed|cation|cations)\b`), "certifi$1"},
-		{regexp.MustCompile(`(?i)\bden(ed|ing|ition|itions)\b`), "defin$1"},
+		{regexp.MustCompile(`(?i)\bdenition(s)?\b`), "definition$1"},
 		{regexp.MustCompile(`(?i)\binnite(ly)?\b`), "infinite$1"},
 		{regexp.MustCompile(`(?i)\binnity\b`), "infinity"},
-		{regexp.MustCompile(`(?i)\bprole(s)?\b`), "profile$1"},
-		{regexp.MustCompile(`(?i)\bconrm(s|ed|ing|ation)?\b`), "confirm$1"},
-		{regexp.MustCompile(`(?i)\brst\b`), "first"},
-		{regexp.MustCompile(`(?i)\bgure(s)?\b`), "figure$1"},
-		{regexp.MustCompile(`(?i)\bnal(ly)?\b`), "final$1"},
+		{regexp.MustCompile(`(?i)\bconrm(ation)\b`), "confirm$1"},
 		{regexp.MustCompile(`(?i)\bnancial(ly)?\b`), "financial$1"},
-		{regexp.MustCompile(`(?i)\beld(s)?\b`), "field$1"},
 		{regexp.MustCompile(`(?i)\bqualied\b`), "qualified"},
 		{regexp.MustCompile(`(?i)\bquanti(ed|able|cation)\b`), "quantifi$1"},
 		{regexp.MustCompile(`(?i)\bsimpli(ed|cation|cations|fy)\b`), "simplifi$1"},
@@ -900,14 +905,9 @@ func repairCommonMissingLigatures(text string) string {
 		{regexp.MustCompile(`(?i)\beective(ly|ness)?\b`), "effective$1"},
 		{regexp.MustCompile(`(?i)\beect(s|ed|ing)?\b`), "effect$1"},
 		{regexp.MustCompile(`(?i)\baect(s|ed|ing|ive)?\b`), "affect$1"},
-		{regexp.MustCompile(`(?i)\btrac\b`), "traffic"},
-		{regexp.MustCompile(`(?i)\boen\b`), "often"},
-		{regexp.MustCompile(`(?i)\bsuer(s|ed|ing)?\b`), "suffer$1"},
-		{regexp.MustCompile(`(?i)\boer(s|ed|ing)?\b`), "offer$1"},
 		{regexp.MustCompile(`(?i)\btransormer(s)?\b`), "transformer$1"},
 
 		// fl ligatures
-		{regexp.MustCompile(`(?i)\bight(s)?\b`), "flight$1"},
 		{regexp.MustCompile(`(?i)\bexible\b`), "flexible"},
 		{regexp.MustCompile(`(?i)\bexibility\b`), "flexibility"},
 		{regexp.MustCompile(`(?i)\buctuat(e|ed|ing|ion|ions)\b`), "fluctuat$1"},
@@ -922,6 +922,13 @@ func repairCommonMissingLigatures(text string) string {
 
 func cleanExtractedPDFText(raw string) string {
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+
+	reEnDash := regexp.MustCompile(`(\d)[\x1e\x1f\x1b\x1d](\d)`)
+	raw = reEnDash.ReplaceAllString(raw, "$1–$2")
+
+	reBullet := regexp.MustCompile(`(?m)^\s*[\x1e\x1f\x1b\x01-\x08\x10-\x1a]\s*`)
+	raw = reBullet.ReplaceAllString(raw, "- ")
+
 	raw = decomposeLigatures(raw)
 
 	var sb strings.Builder
