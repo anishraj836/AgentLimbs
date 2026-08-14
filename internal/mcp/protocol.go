@@ -214,7 +214,18 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 				}
 			}
 
-			markdownContent, _, title := extractor.ConvertHTMLToMarkdown(targetURL, bodyBytes, mode)
+			contentType := res.Response.Header.Get("Content-Type")
+			markdownContent, totalTokens, title, extractErr := extractor.ExtractDocumentText(targetURL, contentType, bodyBytes, mode)
+			if extractErr != nil {
+				toolResult = CallToolResult{
+					IsError: true,
+					Content: []ToolContent{
+						{Type: "text", Text: extractErr.Error()},
+					},
+				}
+				break
+			}
+
 			cleanMarkdown := strings.TrimSpace(markdownContent)
 			wordCount := len(strings.Fields(cleanMarkdown))
 			lowerTitle := strings.ToLower(title)
@@ -235,8 +246,6 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 				}
 				break
 			}
-
-			totalTokens := len(markdownContent) / 4
 
 			ttlDuration, hasTTL := api.ClampTTL(ttlSeconds)
 			if hasTTL {

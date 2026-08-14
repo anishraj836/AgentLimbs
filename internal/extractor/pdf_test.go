@@ -94,3 +94,46 @@ func TestConvertHTMLToMarkdown_PDFRouting(t *testing.T) {
 		t.Errorf("Expected markdown to contain extracted PDF text, got: '%s'", md)
 	}
 }
+
+func TestParseBTBlockContent_MalformedBounds(t *testing.T) {
+	// Test malformed input with trailing backslashes inside literal string / TJ arrays
+	malformedBlocks := [][]byte{
+		[]byte(`BT (unclosed string with trailing backslash \`),
+		[]byte(`BT (unclosed \`),
+		[]byte(`BT [ (array unclosed \`),
+		[]byte(`BT <1234`),
+		[]byte(`BT [ <1234`),
+	}
+
+	for i, block := range malformedBlocks {
+		t.Run(fmt.Sprintf("Block_%d", i), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("parseBTBlockContent panicked on malformed input: %v", r)
+				}
+			}()
+			_ = parseBTBlockContent(block)
+		})
+	}
+}
+
+func TestDecompressPDFStream_DecompressionBombLimit(t *testing.T) {
+	// Create a large payload (> 10MB)
+	largeData := bytes.Repeat([]byte("0123456789abcdef"), 1*1024*1024) // 16MB of raw data
+	var b bytes.Buffer
+	zw := zlib.NewWriter(&b)
+	zw.Write(largeData)
+	zw.Close()
+
+	compressed := b.Bytes()
+	dict := "/Filter /FlateDecode"
+
+	decomp := decompressPDFStream(dict, compressed)
+	if len(decomp) > 10*1024*1024 {
+		t.Errorf("Expected decompressed stream size to be capped at 10MB (10485760 bytes), got %d bytes", len(decomp))
+	}
+	if len(decomp) != 10*1024*1024 {
+		t.Errorf("Expected decompressed stream size to equal exactly 10MB limit, got %d bytes", len(decomp))
+	}
+}
+

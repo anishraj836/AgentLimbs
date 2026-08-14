@@ -117,7 +117,18 @@ func (idx *InvertedIndex) GetPostingList(term string) (*PostingList, bool) {
 		DocumentFrequency: pl.DocumentFrequency,
 		Entries:           make([]PostingEntry, len(pl.Entries)),
 	}
-	copy(cp.Entries, pl.Entries)
+	for i, entry := range pl.Entries {
+		var posCopy []int
+		if entry.Positions != nil {
+			posCopy = make([]int, len(entry.Positions))
+			copy(posCopy, entry.Positions)
+		}
+		cp.Entries[i] = PostingEntry{
+			DocID:         entry.DocID,
+			TermFrequency: entry.TermFrequency,
+			Positions:     posCopy,
+		}
+	}
 	return cp, true
 }
 
@@ -148,15 +159,42 @@ type indexSnapshot struct {
 
 func (idx *InvertedIndex) SaveSnapshot(filePath string) error {
 	idx.mu.RLock()
-	snap := indexSnapshot{
-		Postings:       idx.postings,
-		DocLengths:     idx.docLengths,
-		TotalDocLength: idx.totalDocLength,
-		TotalDocuments: idx.totalDocuments,
+	docLengthsCopy := make(map[string]int, len(idx.docLengths))
+	for k, v := range idx.docLengths {
+		docLengthsCopy[k] = v
 	}
-	data, err := json.Marshal(snap)
+	postingsCopy := make(map[string]*PostingList, len(idx.postings))
+	for k, pl := range idx.postings {
+		entriesCopy := make([]PostingEntry, len(pl.Entries))
+		for i, entry := range pl.Entries {
+			var posCopy []int
+			if entry.Positions != nil {
+				posCopy = make([]int, len(entry.Positions))
+				copy(posCopy, entry.Positions)
+			}
+			entriesCopy[i] = PostingEntry{
+				DocID:         entry.DocID,
+				TermFrequency: entry.TermFrequency,
+				Positions:     posCopy,
+			}
+		}
+		postingsCopy[k] = &PostingList{
+			Term:              pl.Term,
+			DocumentFrequency: pl.DocumentFrequency,
+			Entries:           entriesCopy,
+		}
+	}
+	totalDocLength := idx.totalDocLength
+	totalDocuments := idx.totalDocuments
 	idx.mu.RUnlock()
 
+	snap := indexSnapshot{
+		Postings:       postingsCopy,
+		DocLengths:     docLengthsCopy,
+		TotalDocLength: totalDocLength,
+		TotalDocuments: totalDocuments,
+	}
+	data, err := json.Marshal(snap)
 	if err != nil {
 		return err
 	}
@@ -456,13 +494,20 @@ type vectorSnapshot struct {
 
 func (vi *VectorIndex) SaveSnapshot(filePath string) error {
 	vi.mu.RLock()
-	snap := vectorSnapshot{
-		Dimensions: vi.dimensions,
-		Vectors:    vi.vectors,
+	dimensions := vi.dimensions
+	vectorsCopy := make(map[string][]float64, len(vi.vectors))
+	for k, v := range vi.vectors {
+		vecCopy := make([]float64, len(v))
+		copy(vecCopy, v)
+		vectorsCopy[k] = vecCopy
 	}
-	data, err := json.Marshal(snap)
 	vi.mu.RUnlock()
 
+	snap := vectorSnapshot{
+		Dimensions: dimensions,
+		Vectors:    vectorsCopy,
+	}
+	data, err := json.Marshal(snap)
 	if err != nil {
 		return err
 	}

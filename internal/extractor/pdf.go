@@ -187,18 +187,22 @@ func shouldSkipPDFStream(dict string) bool {
 	return false
 }
 
+const maxDecompressedStreamSize = 10 * 1024 * 1024 // 10MB max stream decompression limit
+
 func decompressPDFStream(dict string, raw []byte) []byte {
 	if strings.Contains(dict, "/FlateDecode") || bytes.HasPrefix(raw, []byte{0x78, 0x9c}) || bytes.HasPrefix(raw, []byte{0x78, 0x01}) || bytes.HasPrefix(raw, []byte{0x78, 0xda}) {
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err == nil {
-			decomp, err2 := io.ReadAll(zr)
+			limited := io.LimitReader(zr, maxDecompressedStreamSize)
+			decomp, err2 := io.ReadAll(limited)
 			zr.Close()
 			if err2 == nil && len(decomp) > 0 {
 				return decomp
 			}
 		}
 		fr := flate.NewReader(bytes.NewReader(raw))
-		decomp, err3 := io.ReadAll(fr)
+		limited := io.LimitReader(fr, maxDecompressedStreamSize)
+		decomp, err3 := io.ReadAll(limited)
 		fr.Close()
 		if err3 == nil && len(decomp) > 0 {
 			return decomp
@@ -249,7 +253,11 @@ func parseBTBlockContent(block []byte) string {
 			i++
 			for i < n && depth > 0 {
 				if block[i] == '\\' {
-					i += 2
+					if i+1 < n {
+						i += 2
+					} else {
+						i = n
+					}
 					continue
 				}
 				if block[i] == '(' {
@@ -258,6 +266,9 @@ func parseBTBlockContent(block []byte) string {
 					depth--
 				}
 				i++
+			}
+			if i > n {
+				i = n
 			}
 			rawStr := string(block[start:i])
 			op := peekPDFOperator(block[i:])
@@ -275,6 +286,9 @@ func parseBTBlockContent(block []byte) string {
 			}
 			if i < n && block[i] == '>' {
 				i++
+				if i > n {
+					i = n
+				}
 				rawStr := string(block[start:i])
 				op := peekPDFOperator(block[i:])
 				if op == "Tj" || op == "'" || op == "\"" || op == "TJ" {
@@ -292,6 +306,9 @@ func parseBTBlockContent(block []byte) string {
 			}
 			if i < n && block[i] == ']' {
 				i++
+				if i > n {
+					i = n
+				}
 				op := peekPDFOperator(block[i:])
 				if op == "TJ" {
 					arrayContent := string(block[start:i])
@@ -349,7 +366,11 @@ func parseTJArray(arrStr string) string {
 			i++
 			for i < n && depth > 0 {
 				if arrStr[i] == '\\' {
-					i += 2
+					if i+1 < n {
+						i += 2
+					} else {
+						i = n
+					}
 					continue
 				}
 				if arrStr[i] == '(' {
@@ -358,6 +379,9 @@ func parseTJArray(arrStr string) string {
 					depth--
 				}
 				i++
+			}
+			if i > n {
+				i = n
 			}
 			rawStr := arrStr[start:i]
 			parsed := parsePDFLiteralString(rawStr)
@@ -370,6 +394,9 @@ func parseTJArray(arrStr string) string {
 			}
 			if i < n && arrStr[i] == '>' {
 				i++
+				if i > n {
+					i = n
+				}
 				rawStr := arrStr[start:i]
 				parsed := parsePDFHexString(rawStr)
 				sb.WriteString(parsed)

@@ -181,35 +181,48 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(res.FinalURL, htmlBytes, req.Mode)
+	contentType := res.Response.Header.Get("Content-Type")
+	mdText, tokens, title, extractErr := extractor.ExtractDocumentText(res.FinalURL, contentType, htmlBytes, req.Mode)
+	if extractErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": extractErr.Error()})
+		return
+	}
 
-	cleanDoc, _ := extractor.ProcessRawHTML(res.FinalURL, htmlBytes)
-	if cleanDoc != nil {
-		rawTokens := strings.Fields(strings.ToLower(cleanDoc.Body))
-		termPositions := make(map[string][]int)
-		for idx, raw := range rawTokens {
-			clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
-			if clean == "" || stopwords.IsStopword(clean) {
-				continue
-			}
-			stemmed := stemmer.Stem(clean)
-			termPositions[stemmed] = append(termPositions[stemmed], idx)
+	bodyForIndexing := mdText
+	docTitle := title
+	if cleanDoc, _ := extractor.ProcessRawHTML(res.FinalURL, htmlBytes); cleanDoc != nil && cleanDoc.Body != "" {
+		bodyForIndexing = cleanDoc.Body
+		if cleanDoc.Title != "" {
+			docTitle = cleanDoc.Title
 		}
+	}
 
-		index.GlobalEngine.IndexDocumentWithSource(cleanDoc.URL, cleanDoc.Title, cleanDoc.Body, termPositions, tokens, "embedded_scraped", res.FinalURL)
-
-		if ttlDuration, hasTTL := api.ClampTTL(req.TTLSeconds); hasTTL {
-			_ = storage.SaveCrawledDocumentWithTTL(
-				r.Context(),
-				cleanDoc.URL,
-				cleanDoc.Title,
-				cleanDoc.Body,
-				tokens,
-				"embedded_scraped",
-				res.FinalURL,
-				ttlDuration,
-			)
+	rawTokens := strings.Fields(strings.ToLower(bodyForIndexing))
+	termPositions := make(map[string][]int)
+	for idx, raw := range rawTokens {
+		clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
+		if clean == "" || stopwords.IsStopword(clean) {
+			continue
 		}
+		stemmed := stemmer.Stem(clean)
+		termPositions[stemmed] = append(termPositions[stemmed], idx)
+	}
+
+	index.GlobalEngine.IndexDocumentWithSource(res.FinalURL, docTitle, bodyForIndexing, termPositions, tokens, "embedded_scraped", res.FinalURL)
+
+	if ttlDuration, hasTTL := api.ClampTTL(req.TTLSeconds); hasTTL {
+		_ = storage.SaveCrawledDocumentWithTTL(
+			r.Context(),
+			res.FinalURL,
+			docTitle,
+			bodyForIndexing,
+			tokens,
+			"embedded_scraped",
+			res.FinalURL,
+			ttlDuration,
+		)
 	}
 
 	triggerDebouncedSave(s.dataDir)

@@ -164,3 +164,57 @@ func TestURLAliasDeduplication(t *testing.T) {
 		t.Errorf("Expected exactly 1 metadata entry (deduplicated), got %d entries", len(titles))
 	}
 }
+
+func TestPostingListDeepCopyConcurrency(t *testing.T) {
+	inv := NewInvertedIndex()
+	inv.AddDocument("doc1", map[string][]int{"go": {1, 5, 10}}, 15)
+
+	done := make(chan bool)
+	go func() {
+		for i := 0; i < 100; i++ {
+			inv.AddDocument("doc1", map[string][]int{"go": {i, i + 1}}, 20)
+		}
+		done <- true
+	}()
+
+	go func() {
+		for i := 0; i < 100; i++ {
+			if pl, exists := inv.GetPostingList("go"); exists && len(pl.Entries) > 0 {
+				// Mutate returned positions slice locally to test isolation
+				if len(pl.Entries[0].Positions) > 0 {
+					pl.Entries[0].Positions[0] = 99999
+				}
+			}
+		}
+		done <- true
+	}()
+
+	<-done
+	<-done
+}
+
+func TestVectorIndexSaveSnapshotDeepCopyConcurrency(t *testing.T) {
+	tmpDir := t.TempDir()
+	vi := NewVectorIndex(3)
+	_ = vi.AddVector("doc1", []float64{0.1, 0.2, 0.3})
+
+	done := make(chan bool)
+	go func() {
+		for i := 0; i < 50; i++ {
+			_ = vi.AddVector(filepath.Join("doc", string(rune('a'+i%26))), []float64{float64(i), 0.5, 0.9})
+		}
+		done <- true
+	}()
+
+	go func() {
+		for i := 0; i < 20; i++ {
+			snapPath := filepath.Join(tmpDir, "vec_snap.json")
+			_ = vi.SaveSnapshot(snapPath)
+		}
+		done <- true
+	}()
+
+	<-done
+	<-done
+}
+

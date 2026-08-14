@@ -340,7 +340,12 @@ func (h *AgentHandler) Scrape(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mdText, tokens, title := extractor.ConvertHTMLToMarkdown(result.FinalURL, htmlBytes, req.Mode)
+	contentType := result.Response.Header.Get("Content-Type")
+	mdText, tokens, title, extractErr := extractor.ExtractDocumentText(result.FinalURL, contentType, htmlBytes, req.Mode)
+	if extractErr != nil {
+		http.Error(w, `{"error":"`+extractErr.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
 
 	cleanDoc, _ := extractor.ProcessRawHTML(result.FinalURL, htmlBytes)
 	if cleanDoc != nil {
