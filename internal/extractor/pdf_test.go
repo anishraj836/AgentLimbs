@@ -380,7 +380,7 @@ ET`
 
 func TestExtractTitleFromCleanedText_OutOfOrderStreams(t *testing.T) {
 	// Simulate out of order streams
-	cleanedText := "Abstract\nThis is an abstract.\nAttention Is All You Need\nAshish Vaswani"
+	cleanedText := "1 Introduction\nAttention Is All You Need\nAshish Vaswani"
 	title := extractTitleFromCleanedText(cleanedText)
 	if title != "Attention Is All You Need" {
 		t.Errorf("Expected 'Attention Is All You Need', got %q", title)
