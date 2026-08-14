@@ -88,3 +88,44 @@ func TestUnrankedRanksJSONSchema(t *testing.T) {
 		t.Errorf("Expected doc3 VectorRank to be &1, got %v", doc3Hit.VectorRank)
 	}
 }
+
+func TestRRFScoreScalingAndNormalization(t *testing.T) {
+	bm25Hits := []index.SearchHit{
+		{DocID: "doc1", Score: 10.0, Title: "Golang Distributed Crawler", Snippet: "High performance crawling engine in Go"},
+		{DocID: "doc2", Score: 5.0, Title: "Python Scraper", Snippet: "Scraping with BeautifulSoup"},
+	}
+
+	vectorHits := []index.VectorSearchResult{
+		{DocID: "doc1", Similarity: 0.98},
+		{DocID: "doc3", Similarity: 0.75},
+	}
+
+	// Test with query - RRFScore must remain pure reciprocal rank score without integer bonuses (+1.5, +2.0)
+	fused := ReciprocalRankFusion("Golang Distributed Crawler", bm25Hits, vectorHits, 5)
+
+	if len(fused) != 3 {
+		t.Fatalf("Expected 3 fused hits, got %d", len(fused))
+	}
+
+	// Maximum possible RRF score for rank 1 in both BM25 and Vector is 1/(60+1) + 1/(60+1) = 2/61 ≈ 0.0327868...
+	for _, hit := range fused {
+		if hit.RRFScore > 0.033 || hit.RRFScore < 0.0 {
+			t.Errorf("Doc %s RRFScore %f is out of expected pure RRF range [0.0, 0.033]", hit.DocID, hit.RRFScore)
+		}
+	}
+
+	// doc1 has rank 1 in both BM25 and Vector: 1/61 + 1/61 = 0.0327868... -> ~0.03279
+	expectedDoc1Score := 1.0/61.0 + 1.0/61.0
+	diff := hitScoreDiff(fused[0].RRFScore, expectedDoc1Score)
+	if diff > 0.0001 {
+		t.Errorf("Expected doc1 pure RRFScore ~%f, got %f (diff: %f)", expectedDoc1Score, fused[0].RRFScore, diff)
+	}
+}
+
+func hitScoreDiff(a, b float64) float64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+

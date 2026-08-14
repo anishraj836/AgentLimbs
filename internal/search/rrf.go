@@ -213,19 +213,6 @@ func ReciprocalRankFusion(
 		})
 	}
 
-	if query != "" {
-		for i := range fusedHits {
-			boost := ComputeKeywordTitleBoostScore(query, fusedHits[i].Title, fusedHits[i].Snippet)
-			fusedHits[i].RRFScore += boost
-		}
-		sort.Slice(fusedHits, func(i, j int) bool {
-			if math.Abs(fusedHits[i].RRFScore-fusedHits[j].RRFScore) < 1e-9 {
-				return fusedHits[i].DocID < fusedHits[j].DocID
-			}
-			return fusedHits[i].RRFScore > fusedHits[j].RRFScore
-		})
-	}
-
 	return fusedHits
 }
 

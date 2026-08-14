@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"io"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 )
 
 // IsPDF checks if data starts with or contains %PDF- header.
@@ -79,46 +82,168 @@ func ExtractTextFromPDF(pdfBytes []byte) (text string, title string, err error) 
 		return "", "", fmt.Errorf("PDF text extraction error: extracted text contains fewer than 15 words (%d words found, scanned image or encrypted PDF)", len(words))
 	}
 
-	if title == "" {
-		lines := strings.Split(cleanedText, "\n")
-		for _, l := range lines {
-			l = strings.TrimSpace(l)
-			if len(l) > 3 {
-				if len(l) > 80 {
-					title = l[:80] + "..."
-				} else {
-					title = l
-				}
-				break
-			}
-		}
+	if title == "" || isGenericTitle(title) {
+		title = extractTitleFromCleanedText(cleanedText)
 	}
 
-	if title == "" {
+	if title == "" || isGenericTitle(title) {
 		title = "PDF Document"
 	}
 
 	return cleanedText, title, nil
 }
 
+func isGenericTitle(t string) bool {
+	t = strings.TrimSpace(t)
+	if len(t) == 0 {
+		return true
+	}
+	lower := strings.ToLower(t)
+	if lower == "untitled" || lower == "pdf document" || lower == "document" ||
+		lower == "default" || lower == "test" || lower == "unknown" ||
+		lower == "blank" || lower == "pdf" || lower == "none" || lower == "null" {
+		return true
+	}
+	if strings.HasPrefix(lower, "microsoft word -") ||
+		strings.HasPrefix(lower, "word -") ||
+		strings.HasPrefix(lower, "latex -") ||
+		strings.HasPrefix(lower, "arxiv:") ||
+		strings.HasPrefix(lower, "powerpoint -") {
+		return true
+	}
+	if strings.HasSuffix(lower, ".pdf") || strings.HasSuffix(lower, ".docx") {
+		return true
+	}
+	return false
+}
+
+func extractTitleFromCleanedText(cleanedText string) string {
+	lines := strings.Split(cleanedText, "\n")
+	reArxiv := regexp.MustCompile(`(?i)^arxiv:`)
+	reStop := regexp.MustCompile(`(?i)^(abstract\b|authors?\b|1[\.\s]+introduction\b|introduction\b|table of contents\b)`)
+	reBoilerplate := regexp.MustCompile(`(?i)^(provided proper attribution|copyright\b|all rights reserved|published in\b|proceedings of\b|doi:|issn:|isbn:|https?://|www\.)`)
+	rePageNum := regexp.MustCompile(`^(page\s*)?[0-9]+$`)
+
+	var candidateLines []string
+
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			continue
+		}
+		if reArxiv.MatchString(trimmed) || strings.Contains(strings.ToLower(trimmed), "arxiv:") {
+			continue
+		}
+		if rePageNum.MatchString(trimmed) {
+			continue
+		}
+		if reBoilerplate.MatchString(trimmed) {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "%") {
+			continue
+		}
+		if reStop.MatchString(trimmed) {
+			break
+		}
+
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "@") || strings.Contains(lower, "department of") ||
+			strings.Contains(lower, "university") || strings.Contains(lower, "laboratory") ||
+			strings.Contains(lower, "institute") {
+			continue
+		}
+
+		if len(trimmed) >= 4 {
+			candidateLines = append(candidateLines, trimmed)
+		}
+	}
+
+	if len(candidateLines) > 0 {
+		title := candidateLines[0]
+		if len(title) > 120 {
+			title = title[:120] + "..."
+		}
+		return title
+	}
+
+	return ""
+}
+
 func extractPDFTitle(pdfBytes []byte) string {
+	// 1. Check /Info dictionary /Title (...)
 	reLiteral := regexp.MustCompile(`/Title\s*\(((?:[^\)\\]|\\.)*)\)`)
 	if match := reLiteral.FindSubmatch(pdfBytes); len(match) > 1 {
 		t := parsePDFLiteralString("(" + string(match[1]) + ")")
 		t = strings.TrimSpace(t)
-		if len(t) > 0 {
+		if len(t) > 0 && !isGenericTitle(t) {
 			return t
 		}
 	}
+
+	// 2. Check /Info dictionary /Title <...>
 	reHex := regexp.MustCompile(`/Title\s*<([0-9a-fA-F\s]+)>`)
 	if match := reHex.FindSubmatch(pdfBytes); len(match) > 1 {
 		t := parsePDFHexString("<" + string(match[1]) + ">")
 		t = strings.TrimSpace(t)
-		if len(t) > 0 {
+		if len(t) > 0 && !isGenericTitle(t) {
+			return t
+		}
+	}
+
+	// 3. Check XMP metadata in raw bytes
+	if title := extractXMPTitle(pdfBytes); title != "" && !isGenericTitle(title) {
+		return title
+	}
+
+	// 4. Scan decompressed streams for XMP metadata or /Info
+	streams := extractPDFStreams(pdfBytes)
+	for _, s := range streams {
+		decomp := decompressPDFStream(s.dict, s.data)
+		if title := extractXMPTitle(decomp); title != "" && !isGenericTitle(title) {
+			return title
+		}
+		if match := reLiteral.FindSubmatch(decomp); len(match) > 1 {
+			t := parsePDFLiteralString("(" + string(match[1]) + ")")
+			t = strings.TrimSpace(t)
+			if len(t) > 0 && !isGenericTitle(t) {
+				return t
+			}
+		}
+	}
+
+	return ""
+}
+
+func extractXMPTitle(data []byte) string {
+	reDCTitle := regexp.MustCompile(`(?is)<dc:title[^>]*>(.*?)</dc:title>`)
+	if match := reDCTitle.FindSubmatch(data); len(match) > 1 {
+		t := cleanXMPTitleContent(match[1])
+		if t != "" {
+			return t
+		}
+	}
+
+	reXMPTitle := regexp.MustCompile(`(?is)<xmp:Title[^>]*>(.*?)</xmp:Title>`)
+	if match := reXMPTitle.FindSubmatch(data); len(match) > 1 {
+		t := cleanXMPTitleContent(match[1])
+		if t != "" {
 			return t
 		}
 	}
 	return ""
+}
+
+func cleanXMPTitleContent(raw []byte) string {
+	reLi := regexp.MustCompile(`(?is)<rdf:li[^>]*>(.*?)</rdf:li>`)
+	if match := reLi.FindSubmatch(raw); len(match) > 1 {
+		raw = match[1]
+	}
+	reTags := regexp.MustCompile(`(?s)<[^>]+>`)
+	cleaned := reTags.ReplaceAllString(string(raw), "")
+	cleaned = html.UnescapeString(cleaned)
+	cleaned = strings.TrimSpace(cleaned)
+	return cleaned
 }
 
 type pdfStream struct {
@@ -238,15 +363,62 @@ func extractTextFromBTBlocks(data []byte) []string {
 	return parts
 }
 
+func isDelim(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f' || ch == 0 ||
+		ch == '(' || ch == ')' || ch == '<' || ch == '>' || ch == '[' || ch == ']' ||
+		ch == '{' || ch == '}' || ch == '/' || ch == '%'
+}
+
 func parseBTBlockContent(block []byte) string {
 	var lineBuilder strings.Builder
 	var blockBuilder strings.Builder
+
+	var operands []string
+	var hasTm bool
+	var lastTmX, lastTmY float64
+
+	flushLine := func() {
+		if lineBuilder.Len() > 0 {
+			trimmed := strings.TrimSpace(lineBuilder.String())
+			if len(trimmed) > 0 {
+				blockBuilder.WriteString(trimmed)
+				blockBuilder.WriteString("\n")
+			}
+			lineBuilder.Reset()
+		}
+	}
+
+	appendWord := func(str string) {
+		if str == "" {
+			return
+		}
+		if lineBuilder.Len() > 0 && !strings.HasSuffix(lineBuilder.String(), " ") && !strings.HasPrefix(str, " ") {
+			lineBuilder.WriteString(" ")
+		}
+		lineBuilder.WriteString(str)
+	}
 
 	i := 0
 	n := len(block)
 
 	for i < n {
 		ch := block[i]
+
+		// Skip whitespace
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f' || ch == 0 {
+			i++
+			continue
+		}
+
+		// Skip comments
+		if ch == '%' {
+			for i < n && block[i] != '\r' && block[i] != '\n' {
+				i++
+			}
+			continue
+		}
+
+		// Literal string: (...)
 		if ch == '(' {
 			start := i
 			depth := 1
@@ -270,15 +442,16 @@ func parseBTBlockContent(block []byte) string {
 			if i > n {
 				i = n
 			}
-			rawStr := string(block[start:i])
-			op := peekPDFOperator(block[i:])
-			if op == "Tj" || op == "'" || op == "\"" || op == "TJ" {
-				parsed := parsePDFLiteralString(rawStr)
-				if parsed != "" {
-					lineBuilder.WriteString(parsed)
-				}
+			operands = append(operands, string(block[start:i]))
+			continue
+		}
+
+		// Hex string: <...> (avoid dictionary <<)
+		if ch == '<' {
+			if i+1 < n && block[i+1] == '<' {
+				i += 2
+				continue
 			}
-		} else if ch == '<' && i+1 < n && block[i+1] != '<' {
 			start := i
 			i++
 			for i < n && block[i] != '>' {
@@ -286,73 +459,192 @@ func parseBTBlockContent(block []byte) string {
 			}
 			if i < n && block[i] == '>' {
 				i++
-				if i > n {
-					i = n
-				}
-				rawStr := string(block[start:i])
-				op := peekPDFOperator(block[i:])
-				if op == "Tj" || op == "'" || op == "\"" || op == "TJ" {
-					parsed := parsePDFHexString(rawStr)
-					if parsed != "" {
-						lineBuilder.WriteString(parsed)
-					}
-				}
 			}
-		} else if ch == '[' {
+			if i > n {
+				i = n
+			}
+			operands = append(operands, string(block[start:i]))
+			continue
+		}
+
+		// Close dictionary >>
+		if ch == '>' {
+			if i+1 < n && block[i+1] == '>' {
+				i += 2
+			} else {
+				i++
+			}
+			continue
+		}
+
+		// Array: [...]
+		if ch == '[' {
 			start := i
 			i++
 			for i < n && block[i] != ']' {
-				i++
+				if block[i] == '(' {
+					depth := 1
+					i++
+					for i < n && depth > 0 {
+						if block[i] == '\\' {
+							if i+1 < n {
+								i += 2
+							} else {
+								i = n
+							}
+							continue
+						}
+						if block[i] == '(' {
+							depth++
+						} else if block[i] == ')' {
+							depth--
+						}
+						i++
+					}
+				} else if block[i] == '<' && (i+1 >= n || block[i+1] != '<') {
+					i++
+					for i < n && block[i] != '>' {
+						i++
+					}
+					if i < n && block[i] == '>' {
+						i++
+					}
+				} else {
+					i++
+				}
 			}
 			if i < n && block[i] == ']' {
 				i++
-				if i > n {
-					i = n
-				}
-				op := peekPDFOperator(block[i:])
-				if op == "TJ" {
-					arrayContent := string(block[start:i])
-					parsed := parseTJArray(arrayContent)
-					if parsed != "" {
-						lineBuilder.WriteString(parsed)
+			}
+			if i > n {
+				i = n
+			}
+			operands = append(operands, string(block[start:i]))
+			continue
+		}
+
+		// Name: /Name
+		if ch == '/' {
+			start := i
+			i++
+			for i < n && !isDelim(block[i]) {
+				i++
+			}
+			operands = append(operands, string(block[start:i]))
+			continue
+		}
+
+		// Other token (number, operator, identifier)
+		start := i
+		for i < n && !isDelim(block[i]) {
+			i++
+		}
+		tok := string(block[start:i])
+
+		switch tok {
+		case "T*":
+			flushLine()
+			operands = operands[:0]
+		case "Td":
+			if len(operands) >= 2 {
+				tx, _ := strconv.ParseFloat(operands[len(operands)-2], 64)
+				ty, _ := strconv.ParseFloat(operands[len(operands)-1], 64)
+				if math.Abs(ty) > 1e-3 {
+					flushLine()
+				} else if math.Abs(tx) > 1e-3 {
+					if lineBuilder.Len() > 0 && !strings.HasSuffix(lineBuilder.String(), " ") {
+						lineBuilder.WriteString(" ")
 					}
 				}
 			}
-		} else if ch == 'T' && i+1 < n && (block[i+1] == '*' || block[i+1] == 'd' || block[i+1] == 'D') {
-			if lineBuilder.Len() > 0 {
-				blockBuilder.WriteString(strings.TrimSpace(lineBuilder.String()))
-				blockBuilder.WriteString("\n")
-				lineBuilder.Reset()
+			operands = operands[:0]
+		case "TD":
+			if len(operands) >= 2 {
+				tx, _ := strconv.ParseFloat(operands[len(operands)-2], 64)
+				ty, _ := strconv.ParseFloat(operands[len(operands)-1], 64)
+				if math.Abs(ty) > 1e-3 {
+					flushLine()
+				} else if math.Abs(tx) > 1e-3 {
+					if lineBuilder.Len() > 0 && !strings.HasSuffix(lineBuilder.String(), " ") {
+						lineBuilder.WriteString(" ")
+					}
+				}
 			}
-			i++
-		} else {
-			i++
+			operands = operands[:0]
+		case "Tm":
+			if len(operands) >= 6 {
+				e, _ := strconv.ParseFloat(operands[len(operands)-2], 64)
+				f, _ := strconv.ParseFloat(operands[len(operands)-1], 64)
+				if hasTm {
+					if math.Abs(f-lastTmY) > 1e-3 {
+						flushLine()
+					} else if math.Abs(e-lastTmX) > 1e-3 {
+						if lineBuilder.Len() > 0 && !strings.HasSuffix(lineBuilder.String(), " ") {
+							lineBuilder.WriteString(" ")
+						}
+					}
+				}
+				lastTmX = e
+				lastTmY = f
+				hasTm = true
+			}
+			operands = operands[:0]
+		case "Tj":
+			if len(operands) >= 1 {
+				raw := operands[len(operands)-1]
+				var parsed string
+				if strings.HasPrefix(raw, "(") {
+					parsed = parsePDFLiteralString(raw)
+				} else if strings.HasPrefix(raw, "<") {
+					parsed = parsePDFHexString(raw)
+				}
+				appendWord(parsed)
+			}
+			operands = operands[:0]
+		case "TJ":
+			if len(operands) >= 1 {
+				raw := operands[len(operands)-1]
+				if strings.HasPrefix(raw, "[") {
+					parsed := parseTJArray(raw)
+					appendWord(parsed)
+				}
+			}
+			operands = operands[:0]
+		case "'":
+			flushLine()
+			if len(operands) >= 1 {
+				raw := operands[len(operands)-1]
+				var parsed string
+				if strings.HasPrefix(raw, "(") {
+					parsed = parsePDFLiteralString(raw)
+				} else if strings.HasPrefix(raw, "<") {
+					parsed = parsePDFHexString(raw)
+				}
+				appendWord(parsed)
+			}
+			operands = operands[:0]
+		case "\"":
+			flushLine()
+			if len(operands) >= 1 {
+				raw := operands[len(operands)-1]
+				var parsed string
+				if strings.HasPrefix(raw, "(") {
+					parsed = parsePDFLiteralString(raw)
+				} else if strings.HasPrefix(raw, "<") {
+					parsed = parsePDFHexString(raw)
+				}
+				appendWord(parsed)
+			}
+			operands = operands[:0]
+		case "Tf", "TL", "Tc", "Tw", "Ts", "Tr", "Tz":
+			operands = operands[:0]
+		default:
+			operands = append(operands, tok)
 		}
 	}
 
-	if lineBuilder.Len() > 0 {
-		blockBuilder.WriteString(strings.TrimSpace(lineBuilder.String()))
-		lineBuilder.Reset()
-	}
-
+	flushLine()
 	return blockBuilder.String()
-}
-
-func peekPDFOperator(rem []byte) string {
-	s := strings.TrimSpace(string(rem))
-	if strings.HasPrefix(s, "Tj") {
-		return "Tj"
-	}
-	if strings.HasPrefix(s, "TJ") {
-		return "TJ"
-	}
-	if strings.HasPrefix(s, "'") {
-		return "'"
-	}
-	if strings.HasPrefix(s, "\"") {
-		return "\""
-	}
-	return ""
 }
 
 func parseTJArray(arrStr string) string {
@@ -360,7 +652,12 @@ func parseTJArray(arrStr string) string {
 	i := 0
 	n := len(arrStr)
 	for i < n {
-		if arrStr[i] == '(' {
+		ch := arrStr[i]
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f' || ch == '[' || ch == ']' {
+			i++
+			continue
+		}
+		if ch == '(' {
 			start := i
 			depth := 1
 			i++
@@ -386,7 +683,7 @@ func parseTJArray(arrStr string) string {
 			rawStr := arrStr[start:i]
 			parsed := parsePDFLiteralString(rawStr)
 			sb.WriteString(parsed)
-		} else if arrStr[i] == '<' {
+		} else if ch == '<' {
 			start := i
 			i++
 			for i < n && arrStr[i] != '>' {
@@ -394,12 +691,24 @@ func parseTJArray(arrStr string) string {
 			}
 			if i < n && arrStr[i] == '>' {
 				i++
-				if i > n {
-					i = n
+			}
+			if i > n {
+				i = n
+			}
+			rawStr := arrStr[start:i]
+			parsed := parsePDFHexString(rawStr)
+			sb.WriteString(parsed)
+		} else if ch == '-' || ch == '+' || (ch >= '0' && ch <= '9') || ch == '.' {
+			start := i
+			for i < n && (arrStr[i] == '-' || arrStr[i] == '+' || arrStr[i] == '.' || (arrStr[i] >= '0' && arrStr[i] <= '9') || arrStr[i] == 'e' || arrStr[i] == 'E') {
+				i++
+			}
+			numStr := arrStr[start:i]
+			val, err := strconv.ParseFloat(numStr, 64)
+			if err == nil && val <= -50 {
+				if sb.Len() > 0 && !strings.HasSuffix(sb.String(), " ") {
+					sb.WriteString(" ")
 				}
-				rawStr := arrStr[start:i]
-				parsed := parsePDFHexString(rawStr)
-				sb.WriteString(parsed)
 			}
 		} else {
 			i++
@@ -413,46 +722,61 @@ func parsePDFLiteralString(s string) string {
 		return ""
 	}
 	content := s[1 : len(s)-1]
-	var sb strings.Builder
-	runes := []rune(content)
-	for i := 0; i < len(runes); i++ {
-		if runes[i] == '\\' && i+1 < len(runes) {
+	var runes []rune
+	rawRunes := []rune(content)
+	for i := 0; i < len(rawRunes); i++ {
+		if rawRunes[i] == '\\' && i+1 < len(rawRunes) {
 			i++
-			switch runes[i] {
+			switch rawRunes[i] {
 			case 'n':
-				sb.WriteRune('\n')
+				runes = append(runes, '\n')
 			case 'r':
-				sb.WriteRune('\r')
+				runes = append(runes, '\r')
 			case 't':
-				sb.WriteRune('\t')
+				runes = append(runes, '\t')
 			case 'b':
-				sb.WriteRune('\b')
+				runes = append(runes, '\b')
 			case 'f':
-				sb.WriteRune('\f')
+				runes = append(runes, '\f')
 			case '(', ')', '\\':
-				sb.WriteRune(runes[i])
+				runes = append(runes, rawRunes[i])
 			default:
-				if runes[i] >= '0' && runes[i] <= '7' {
-					oct := string(runes[i])
-					if i+1 < len(runes) && runes[i+1] >= '0' && runes[i+1] <= '7' {
+				if rawRunes[i] >= '0' && rawRunes[i] <= '7' {
+					oct := string(rawRunes[i])
+					if i+1 < len(rawRunes) && rawRunes[i+1] >= '0' && rawRunes[i+1] <= '7' {
 						i++
-						oct += string(runes[i])
-						if i+1 < len(runes) && runes[i+1] >= '0' && runes[i+1] <= '7' {
+						oct += string(rawRunes[i])
+						if i+1 < len(rawRunes) && rawRunes[i+1] >= '0' && rawRunes[i+1] <= '7' {
 							i++
-							oct += string(runes[i])
+							oct += string(rawRunes[i])
 						}
 					}
 					val, _ := strconv.ParseInt(oct, 8, 32)
-					sb.WriteRune(rune(val))
+					runes = append(runes, rune(val))
 				} else {
-					sb.WriteRune(runes[i])
+					runes = append(runes, rawRunes[i])
 				}
 			}
 		} else {
-			sb.WriteRune(runes[i])
+			runes = append(runes, rawRunes[i])
 		}
 	}
-	return sb.String()
+
+	// Check for UTF-16BE BOM in literal strings: "\xfe\xff..."
+	if len(runes) >= 2 && runes[0] == 0xFE && runes[1] == 0xFF {
+		b := make([]byte, len(runes))
+		for idx, r := range runes {
+			b[idx] = byte(r)
+		}
+		b = b[2:]
+		u16 := make([]uint16, len(b)/2)
+		for idx := 0; idx < len(u16); idx++ {
+			u16[idx] = uint16(b[2*idx])<<8 | uint16(b[2*idx+1])
+		}
+		return string(utf16.Decode(u16))
+	}
+
+	return string(runes)
 }
 
 func parsePDFHexString(s string) string {
@@ -462,6 +786,7 @@ func parsePDFHexString(s string) string {
 	content := strings.ReplaceAll(s[1:len(s)-1], " ", "")
 	content = strings.ReplaceAll(content, "\r", "")
 	content = strings.ReplaceAll(content, "\n", "")
+	content = strings.ReplaceAll(content, "\t", "")
 	if len(content)%2 != 0 {
 		content += "0"
 	}
@@ -469,22 +794,61 @@ func parsePDFHexString(s string) string {
 	if err != nil {
 		return ""
 	}
+	// Check for UTF-16BE BOM (0xFE, 0xFF)
+	if len(b) >= 2 && b[0] == 0xFE && b[1] == 0xFF {
+		b = b[2:]
+		u16 := make([]uint16, len(b)/2)
+		for i := 0; i < len(u16); i++ {
+			u16[i] = uint16(b[2*i])<<8 | uint16(b[2*i+1])
+		}
+		return string(utf16.Decode(u16))
+	}
 	return string(b)
 }
 
+func decomposeLigatures(s string) string {
+	r := strings.NewReplacer(
+		"\uFB00", "ff",
+		"\uFB01", "fi",
+		"\uFB02", "fl",
+		"\uFB03", "ffi",
+		"\uFB04", "ffl",
+		"\x0b", "ff",
+		"\x0c", "fi",
+		"\x0e", "ffi",
+		"\x0f", "ffl",
+	)
+	s = r.Replace(s)
+	// Replace TeX \x0d ligature ("fl")
+	s = strings.ReplaceAll(s, "\x0d", "fl")
+	return s
+}
+
 func cleanExtractedPDFText(raw string) string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	raw = decomposeLigatures(raw)
+
 	var sb strings.Builder
 	for _, r := range raw {
-		if unicode.IsPrint(r) || r == '\n' || r == '\t' || r == '\r' {
+		if unicode.IsPrint(r) || r == '\n' || r == '\t' {
 			sb.WriteRune(r)
-		} else if r == '\f' {
-			sb.WriteRune('\n')
 		}
 	}
-	lines := strings.Split(sb.String(), "\n")
+	text := sb.String()
+
+	// De-hyphenate line breaks: (\w+)-\n(\w+) -> $1$2
+	reHyphen := regexp.MustCompile(`(?m)(\p{L}+)-\s*\n\s*(\p{L}+)`)
+	text = reHyphen.ReplaceAllString(text, "${1}${2}")
+
+	reHyphenAscii := regexp.MustCompile(`(?m)(\w+)-\s*\n\s*(\w+)`)
+	text = reHyphenAscii.ReplaceAllString(text, "${1}${2}")
+
+	reSpaces := regexp.MustCompile(`[ \t]+`)
+
+	lines := strings.Split(text, "\n")
 	var cleanLines []string
 	for _, l := range lines {
-		trimmed := strings.TrimSpace(l)
+		trimmed := strings.TrimSpace(reSpaces.ReplaceAllString(l, " "))
 		if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "<<") || strings.HasPrefix(trimmed, ">>") {
 			continue
 		}
