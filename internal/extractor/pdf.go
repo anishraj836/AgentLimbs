@@ -147,75 +147,188 @@ func isGenericTitle(t string) bool {
 	return false
 }
 
+var (
+	reNonTitleLead       = regexp.MustCompile(`(?i)^(we |there |another |however |in this |this |our |it was |using |these |as |for |from |to |after |then |also |figure |table |section |page |by )`)
+	reAuthorLine         = regexp.MustCompile(`(?i)(@|\bgoogle\b|\bmicrosoft\b|\bfacebook\b|\bmeta\b|\bamazon\b|\bapple\b|\bopenai\b|\bdeepmind\b|\buniversity\b|\buniv\b|\bdepartment\b|\bdept\b|\binstitute\b|\binst\b|\bcollege\b|\bschool\b|\blaboratory\b|\blab\b|\bcenter\b|\bcentre\b|\bfaculty\b|\bcorporation\b|\binc\b|\bllc\b)`)
+	reStandaloneAbstract = regexp.MustCompile(`(?i)^[ \t]*abstract[ \t]*([—\.\:\-].*)?$`)
+)
+
+func isTitleCandidate(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	runes := []rune(trimmed)
+	if len(runes) < 8 || len(runes) > 140 {
+		return false
+	}
+	if !unicode.IsUpper(runes[0]) {
+		return false
+	}
+	lastRune := runes[len(runes)-1]
+	if lastRune == '.' || lastRune == ',' || lastRune == ';' || lastRune == '?' {
+		return false
+	}
+	if strings.Count(trimmed, ",") > 1 {
+		return false
+	}
+	if strings.Contains(trimmed, " and ") && (strings.Contains(trimmed, ".") || strings.Contains(trimmed, ",")) {
+		return false
+	}
+	if strings.Contains(trimmed, "[") || strings.Contains(trimmed, "]") {
+		return false
+	}
+	if reNonTitleLead.MatchString(trimmed) || reAuthorLine.MatchString(trimmed) || reArxivHeader.MatchString(trimmed) || reBoilerplateText.MatchString(trimmed) || rePageNumber.MatchString(trimmed) || reSectionStop.MatchString(trimmed) {
+		return false
+	}
+	if strings.Contains(trimmed, "http://") || strings.Contains(trimmed, "https://") || strings.Contains(trimmed, "www.") || strings.Contains(trimmed, "/") {
+		return false
+	}
+	if isGenericTitle(trimmed) {
+		return false
+	}
+	return true
+}
+
+var reTitleContinuationEnding = regexp.MustCompile(`(?i)(:|—|-|\bfor|\bin|\bof|\band|\bwith|\bon|\bto|\bvia|\bthrough|\busing|\bfrom|\bby|\bas|\btowards|\bbased on)$`)
+
 func extractTitleFromCleanedText(cleanedText string) string {
 	lines := strings.Split(cleanedText, "\n")
 
-	// Pass 1: Find prominent title followed within 8 lines by authors / affiliations / emails / Abstract
-	for i, l := range lines {
+	// Strategy 1: Scan for standalone "Abstract" section header on Page 1 and look backwards (up to 15 lines)
+	for j, l := range lines {
 		trimmed := strings.TrimSpace(l)
-		if len(trimmed) < 4 || len(trimmed) > 120 {
-			continue
-		}
-		// Must start with uppercase letter
-		runes := []rune(trimmed)
-		if !unicode.IsUpper(runes[0]) {
-			continue
-		}
-		// Cannot end with punctuation
-		if strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, ",") || strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, ";") || strings.HasSuffix(trimmed, "?") {
-			continue
-		}
-		if reArxivHeader.MatchString(trimmed) || reBoilerplateText.MatchString(trimmed) || rePageNumber.MatchString(trimmed) || reSectionStop.MatchString(trimmed) {
-			continue
-		}
-		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(lower, "figure ") || strings.HasPrefix(lower, "fig. ") || strings.HasPrefix(lower, "table ") || strings.Contains(lower, "@") {
-			continue
-		}
-		if isGenericTitle(trimmed) {
-			continue
-		}
-
-		// Look ahead up to 8 lines for author indicators: @, Google Brain, Research, University, Department, Institute, or Abstract
-		for j := i + 1; j < len(lines) && j <= i+8; j++ {
-			nextTrimmed := strings.TrimSpace(lines[j])
-			nextLower := strings.ToLower(nextTrimmed)
-			if strings.Contains(nextLower, "@") || strings.Contains(nextLower, "google brain") ||
-				strings.Contains(nextLower, "google research") || strings.Contains(nextLower, "university") ||
-				strings.Contains(nextLower, "department of") || strings.Contains(nextLower, "institute") ||
-				strings.Contains(nextLower, "laboratory") || strings.EqualFold(nextTrimmed, "abstract") {
-				return trimmed
+		if reStandaloneAbstract.MatchString(trimmed) {
+			// Ensure this is a real Page 1 abstract, not a citation reference
+			if j+1 < len(lines) {
+				nextBody := strings.TrimSpace(lines[j+1])
+				if strings.Contains(nextBody, "pages ") || strings.Contains(nextBody, "ACL") || strings.Contains(nextBody, "IEEE") || strings.Contains(nextBody, "arXiv:") {
+					continue
+				}
+			}
+			startIdx := 0
+			if j > 15 {
+				startIdx = j - 15
+			}
+			for i := startIdx; i < j; i++ {
+				cand := strings.TrimSpace(lines[i])
+				if isTitleCandidate(cand) {
+					if reTitleContinuationEnding.MatchString(cand) && i+1 < j {
+						nextCand := strings.TrimSpace(lines[i+1])
+						if isValidTitleContinuation(nextCand) {
+							return cand + " " + nextCand
+						}
+					}
+					return cand
+				}
 			}
 		}
 	}
 
-	// Pass 2: Fallback to first capitalized non-boilerplate line before introduction
-	for _, l := range lines {
-		trimmed := strings.TrimSpace(l)
-		if len(trimmed) < 4 || len(trimmed) > 120 {
+	// Strategy 2: Forward scan for prominent headline followed within 5 lines by author affiliations, emails, or section headers
+	for i, l := range lines {
+		cand := strings.TrimSpace(l)
+		if !isTitleCandidate(cand) {
 			continue
 		}
-		runes := []rune(trimmed)
-		if !unicode.IsUpper(runes[0]) {
+		for j := i + 1; j < len(lines) && j <= i+5; j++ {
+			nextL := strings.TrimSpace(lines[j])
+			if reStandaloneAbstract.MatchString(nextL) || strings.Contains(nextL, "@") || reAuthorLine.MatchString(nextL) || reSectionStop.MatchString(nextL) {
+				if reTitleContinuationEnding.MatchString(cand) && i+1 < j {
+					nextCand := strings.TrimSpace(lines[i+1])
+					if isValidTitleContinuation(nextCand) {
+						return cand + " " + nextCand
+					}
+				}
+				return cand
+			}
+		}
+	}
+
+	// Strategy 3: Top-Headline Scoring Fallback scanning early lines (first 25 lines)
+	// Handles out-of-order streams or documents without explicit abstract/author headers
+	var bestCandidate string
+	var bestScore int
+
+	limit := minInt(len(lines), 25)
+	for i := 0; i < limit; i++ {
+		cand := strings.TrimSpace(lines[i])
+		if !isTitleCandidate(cand) {
 			continue
 		}
-		if strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, ",") || strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, ";") {
-			continue
+		if reTitleContinuationEnding.MatchString(cand) && i+1 < len(lines) {
+			nextCand := strings.TrimSpace(lines[i+1])
+			if isValidTitleContinuation(nextCand) {
+				cand = cand + " " + nextCand
+			}
 		}
-		if reArxivHeader.MatchString(trimmed) || reBoilerplateText.MatchString(trimmed) || rePageNumber.MatchString(trimmed) || reSectionStop.MatchString(trimmed) {
-			continue
+		score := scoreTitleCandidate(cand)
+		if score > bestScore {
+			bestScore = score
+			bestCandidate = cand
 		}
-		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(lower, "figure ") || strings.HasPrefix(lower, "fig. ") || strings.HasPrefix(lower, "table ") || strings.Contains(lower, "@") {
-			continue
-		}
-		if isGenericTitle(trimmed) {
-			continue
-		}
-		return trimmed
+	}
+
+	if bestCandidate != "" && bestScore >= 15 {
+		return bestCandidate
 	}
 
 	return ""
+}
+
+func isValidTitleContinuation(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	runes := []rune(trimmed)
+	if len(runes) < 2 || len(runes) > 90 {
+		return false
+	}
+	lastRune := runes[len(runes)-1]
+	if lastRune == '.' || lastRune == ';' || lastRune == '?' {
+		return false
+	}
+	if strings.Count(trimmed, ",") > 1 {
+		return false
+	}
+	if strings.Contains(trimmed, "[") || strings.Contains(trimmed, "]") {
+		return false
+	}
+	if strings.Contains(trimmed, "@") || reAuthorLine.MatchString(trimmed) || reArxivHeader.MatchString(trimmed) ||
+		reBoilerplateText.MatchString(trimmed) || reSectionStop.MatchString(trimmed) || rePageNumber.MatchString(trimmed) {
+		return false
+	}
+	if strings.Contains(trimmed, "http://") || strings.Contains(trimmed, "https://") || strings.Contains(trimmed, "www.") || strings.Contains(trimmed, "/") {
+		return false
+	}
+	if isGenericTitle(trimmed) {
+		return false
+	}
+	return true
+}
+
+func scoreTitleCandidate(s string) int {
+	words := strings.Fields(s)
+	wordCount := len(words)
+	runeCount := len([]rune(s))
+
+	score := 0
+	if wordCount >= 3 && wordCount <= 16 {
+		score += 30
+	} else if wordCount == 2 {
+		score += 10
+	}
+
+	if runeCount >= 20 && runeCount <= 100 {
+		score += 30
+	} else if runeCount >= 12 {
+		score += 15
+	}
+
+	if strings.Contains(s, ":") || strings.Contains(s, "—") || strings.Contains(s, " - ") {
+		score += 15
+	}
+
+	if wordCount == 2 && runeCount < 18 && !strings.Contains(s, ":") {
+		score -= 20
+	}
+
+	return score
 }
 
 func extractPDFMetadataTitle(pdfBytes []byte) string {
@@ -293,9 +406,43 @@ func extractPDFStreams(pdfBytes []byte) []pdfStream {
 		}
 		absStreamPos := idx + streamPos
 
-		dictStart := bytes.LastIndex(pdfBytes[:absStreamPos], []byte("<<"))
+		// Scan backward from absStreamPos (up to 16,384 bytes) tracking nested >> and << balance
+		scanLimit := 16384
+		startBound := absStreamPos - scanLimit
+		if startBound < 0 {
+			startBound = 0
+		}
+		dictStart := -1
+		depth := 0
+		foundClose := false
+
+		for k := absStreamPos - 1; k >= startBound+1; k-- {
+			if pdfBytes[k-1] == '>' && pdfBytes[k] == '>' {
+				depth++
+				foundClose = true
+				k--
+			} else if pdfBytes[k-1] == '<' && pdfBytes[k] == '<' {
+				if foundClose {
+					depth--
+					if depth == 0 {
+						dictStart = k - 1
+						break
+					}
+				}
+				k--
+			}
+		}
+
+		if dictStart == -1 {
+			// Fallback: simple LastIndex if nested parsing didn't find balanced start
+			lastOpening := bytes.LastIndex(pdfBytes[startBound:absStreamPos], []byte("<<"))
+			if lastOpening != -1 {
+				dictStart = startBound + lastOpening
+			}
+		}
+
 		dictStr := ""
-		if dictStart != -1 && absStreamPos-dictStart < 2048 {
+		if dictStart != -1 && dictStart < absStreamPos {
 			dictStr = string(pdfBytes[dictStart:absStreamPos])
 		}
 
@@ -331,15 +478,55 @@ func extractPDFStreams(pdfBytes []byte) []pdfStream {
 	return streams
 }
 
+var skipStreamTokens = []string{
+	"/type/font",
+	"/subtype/image",
+	"/subtype/type1c",
+	"/subtype/cidfonttype0c",
+	"/subtype/opentype",
+	"/subtype/truetype",
+	"/fontfile",
+	"/fontdescriptor",
+	"/cidset",
+	"/tounicode",
+	"/type/metadata",
+	"/subtype/xml",
+	"/iccbased",
+	"/alternate",
+	"/colorspace",
+	"/dctdecode",
+	"/jpxdecode",
+	"/jbig2decode",
+	"/ccittfaxdecode",
+	"/type/xref",
+	"/type/objstm",
+	"/type/3d",
+	"/type/sound",
+	"/type/movie",
+}
+
 func shouldSkipPDFStream(dict string) bool {
 	if dict == "" {
 		return false
 	}
-	lower := strings.ToLower(dict)
-	if strings.Contains(lower, "/type /font") || strings.Contains(lower, "/type/font") ||
-		strings.Contains(lower, "/type /page") || strings.Contains(lower, "/type/page") ||
-		strings.Contains(lower, "/subtype /image") || strings.Contains(lower, "/subtype/image") {
-		return true
+	var sb strings.Builder
+	sb.Grow(len(dict))
+	for i := 0; i < len(dict); i++ {
+		ch := dict[i]
+		if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n' && ch != '\f' && ch != 0 {
+			if ch >= 'A' && ch <= 'Z' {
+				sb.WriteByte(ch + 32)
+			} else {
+				sb.WriteByte(ch)
+			}
+		}
+	}
+	norm := sb.String()
+
+	for _, token := range skipStreamTokens {
+		if strings.Contains(norm, token) {
+			return true
+		}
 	}
 	return false
 }
@@ -369,25 +556,63 @@ func decompressPDFStream(dict string, raw []byte) []byte {
 }
 
 func extractTextFromBTBlocks(data []byte) []string {
+	if len(data) == 0 || !bytes.Contains(data, []byte("BT")) || !bytes.Contains(data, []byte("ET")) {
+		return nil
+	}
+
 	var parts []string
 	idx := 0
-	for idx < len(data) {
+	n := len(data)
+	for idx < n {
 		btPos := bytes.Index(data[idx:], []byte("BT"))
 		if btPos == -1 {
 			break
 		}
-		absBT := idx + btPos + 2
+		absBT := idx + btPos
 
-		etPos := bytes.Index(data[absBT:], []byte("ET"))
-		if etPos == -1 {
-			break
+		// Validate BT is a standalone token bounded by delimiters
+		if absBT > 0 && !isDelim(data[absBT-1]) {
+			idx = absBT + 2
+			continue
 		}
-		absET := absBT + etPos
+		if absBT+2 < n && !isDelim(data[absBT+2]) {
+			idx = absBT + 2
+			continue
+		}
 
-		blockData := data[absBT:absET]
-		extractedStr := parseBTBlockContent(blockData)
-		if len(strings.TrimSpace(extractedStr)) > 0 {
-			parts = append(parts, extractedStr)
+		searchStart := absBT + 2
+		searchLimit := minInt(n, absBT+2+128*1024)
+		foundET := false
+		absET := -1
+
+		for searchStart < searchLimit {
+			relET := bytes.Index(data[searchStart:searchLimit], []byte("ET"))
+			if relET == -1 {
+				break
+			}
+			candidateET := searchStart + relET
+			// Check ET token boundaries
+			if (candidateET == 0 || isDelim(data[candidateET-1])) &&
+				(candidateET+2 == n || isDelim(data[candidateET+2])) {
+				absET = candidateET
+				foundET = true
+				break
+			}
+			searchStart = candidateET + 2
+		}
+
+		if !foundET || absET <= absBT+2 {
+			idx = absBT + 2
+			continue
+		}
+
+		// Cap max text block size to 128KB to prevent binary false matches
+		if absET-(absBT+2) <= 128*1024 {
+			blockData := data[absBT+2 : absET]
+			extractedStr := parseBTBlockContent(blockData)
+			if len(strings.TrimSpace(extractedStr)) > 0 {
+				parts = append(parts, extractedStr)
+			}
 		}
 
 		idx = absET + 2
@@ -879,7 +1104,7 @@ var (
 	reFixFinalWord     = regexp.MustCompile(`(?i)\b(the|a|its|their|in the|resulting in the)\s+nal\b`)
 	reFixBeneficial    = regexp.MustCompile(`(?i)\bbeneci(al|ally|aries|ary)\b`)
 	reFixBenefit       = regexp.MustCompile(`(?i)\bbenet(s|ed|ing)?\b`)
-	reFixEfficiency    = regexp.MustCompile(`(?i)\befcien(t|tly|cy|cies)\b`)
+	reFixEfficiency    = regexp.MustCompile(`(?i)\b([eE])(?:f|ff)?cien(t|tly|cy|cies)\b`)
 	reFixSignificant   = regexp.MustCompile(`(?i)\bsignican(t|tly|ce)\b`)
 	reFixDifficult     = regexp.MustCompile(`(?i)\bdifcul(t|ty|ties|tly)\b`)
 	reFixSpecific      = regexp.MustCompile(`(?i)\bspeci(c|cally|cation|cations|ed|es|y)\b`)
@@ -896,7 +1121,7 @@ var (
 	reFixVerify        = regexp.MustCompile(`(?i)\bveri(ed|cation|cations|able|er)\b`)
 	reFixJustify       = regexp.MustCompile(`(?i)\bjusti(ed|cation|cations|able)\b`)
 	reFixCertify       = regexp.MustCompile(`(?i)\bcerti(ed|cation|cations)\b`)
-	reFixDefine        = regexp.MustCompile(`(?i)\bden(ed|ing|ition|itions)\b`)
+	reFixDefine        = regexp.MustCompile(`(?i)\b([dD])en(e|ed|es|ing|ition|itions)\b`)
 	reFixInfinite      = regexp.MustCompile(`(?i)\binnite(ly)?\b`)
 	reFixInfinity      = regexp.MustCompile(`(?i)\binnity\b`)
 	reFixProfile       = regexp.MustCompile(`(?i)\bprole(s)?\b`)
@@ -905,7 +1130,13 @@ var (
 	reFixFinancial     = regexp.MustCompile(`(?i)\bnancial(ly)?\b`)
 	reFixQualified     = regexp.MustCompile(`(?i)\bqualied\b`)
 	reFixQuantify      = regexp.MustCompile(`(?i)\bquanti(ed|able|cation)\b`)
-	reFixSimplify      = regexp.MustCompile(`(?i)\bsimpli(ed|cation|cations|fy)\b`)
+	reFixSimplify      = regexp.MustCompile(`(?i)\b([sS])impli(ed|cation|cations|able|er|ers)\b`)
+	reFixInflect       = regexp.MustCompile(`(?i)\b([iI])nect(ional|ions|ion|ive|ed|ing)\b`)
+	reFixUnified       = regexp.MustCompile(`(?i)\b([uU])ni(ed|es|y)\b`)
+	reFixHighly        = regexp.MustCompile(`(?i)\b([hH])ig(ly|est|er)\b`)
+	reFixFindWords     = regexp.MustCompile(`(?i)\bnd\s+(words?|similar|all|the|a|in|out|patterns?|meaningful|nearest|representations)\b`)
+	reFixFindVerb      = regexp.MustCompile(`(?i)\b(to|can|could|will|would|may|might|should|must|and|or|we|they|you|i)\s+nd\b`)
+	reFixFiveTypes     = regexp.MustCompile(`(?i)\bve\s+(types|categories|classes|methods|approaches|models|layers|dimensions|vectors)\b`)
 	reFixDifferent     = regexp.MustCompile(`(?i)\bdieren(t|tly|ce|ces|tiate|tiation)\b`)
 	reFixEffective     = regexp.MustCompile(`(?i)\beective(ly|ness)?\b`)
 	reFixEffect        = regexp.MustCompile(`(?i)\beect(s|ed|ing)?\b`)
@@ -957,6 +1188,12 @@ func decomposeLigatures(s string) string {
 		"\uFB04", "ffl",
 		"\uFB05", "ft",
 		"\uFB06", "st",
+		// TeX Type 1 / custom differences ligatures
+		"\x01", "ff",
+		"\x02", "fi",
+		"\x03", "fl",
+		"\x04", "ffi",
+		"\x05", "ffl",
 		// TeX OT1 ligatures
 		"\x0b", "ff",
 		"\x0c", "fi",
@@ -987,7 +1224,7 @@ func repairCommonMissingLigatures(text string) string {
 	text = reFixFinalWord.ReplaceAllString(text, "$1 final")
 	text = reFixBeneficial.ReplaceAllString(text, "benefici$1")
 	text = reFixBenefit.ReplaceAllString(text, "benefit$1")
-	text = reFixEfficiency.ReplaceAllString(text, "efficien$1")
+	text = reFixEfficiency.ReplaceAllString(text, "${1}fficien${2}")
 	text = reFixSignificant.ReplaceAllString(text, "significan$1")
 	text = reFixDifficult.ReplaceAllString(text, "difficul$1")
 	text = reFixSpecific.ReplaceAllString(text, "specifi$1")
@@ -1004,7 +1241,7 @@ func repairCommonMissingLigatures(text string) string {
 	text = reFixVerify.ReplaceAllString(text, "verifi$1")
 	text = reFixJustify.ReplaceAllString(text, "justifi$1")
 	text = reFixCertify.ReplaceAllString(text, "certifi$1")
-	text = reFixDefine.ReplaceAllString(text, "defin$1")
+	text = reFixDefine.ReplaceAllString(text, "${1}efin${2}")
 	text = reFixInfinite.ReplaceAllString(text, "infinite$1")
 	text = reFixInfinity.ReplaceAllString(text, "infinity")
 	text = reFixProfile.ReplaceAllString(text, "profile$1")
@@ -1013,7 +1250,13 @@ func repairCommonMissingLigatures(text string) string {
 	text = reFixFinancial.ReplaceAllString(text, "financial$1")
 	text = reFixQualified.ReplaceAllString(text, "qualified")
 	text = reFixQuantify.ReplaceAllString(text, "quantifi$1")
-	text = reFixSimplify.ReplaceAllString(text, "simplifi$1")
+	text = reFixSimplify.ReplaceAllString(text, "${1}implifi${2}")
+	text = reFixInflect.ReplaceAllString(text, "${1}nflect${2}")
+	text = reFixUnified.ReplaceAllString(text, "${1}nifi${2}")
+	text = reFixHighly.ReplaceAllString(text, "${1}igh${2}")
+	text = reFixFindWords.ReplaceAllString(text, "find $1")
+	text = reFixFindVerb.ReplaceAllString(text, "$1 find")
+	text = reFixFiveTypes.ReplaceAllString(text, "five $1")
 	text = reFixDifferent.ReplaceAllString(text, "differen$1")
 	text = reFixEffective.ReplaceAllString(text, "effective$1")
 	text = reFixEffect.ReplaceAllString(text, "effect$1")

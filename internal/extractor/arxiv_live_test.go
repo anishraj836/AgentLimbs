@@ -76,11 +76,100 @@ func TestLiveArxivPaperExtraction(t *testing.T) {
 	}
 }
 
+func TestLiveWord2VecPaperExtraction(t *testing.T) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get("https://arxiv.org/pdf/1301.3781")
+	if err != nil {
+		t.Skipf("Network unavailable: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	start := time.Now()
+	text, title, err := ExtractTextFromPDF(body)
+	elapsed := time.Since(start)
+	t.Logf("Word2Vec Extraction took: %v (words=%d, title=%q)", elapsed, len(strings.Fields(text)), title)
+
+	if err != nil {
+		t.Fatalf("ExtractTextFromPDF failed: %v", err)
+	}
+
+	if title != "Efficient Estimation of Word Representations in Vector Space" {
+		t.Errorf("Expected title 'Efficient Estimation of Word Representations in Vector Space', got %q", title)
+	}
+
+	// Check ligatures in Word2Vec
+	badWords := []string{"simplifify", "inectional", " nd words", "dene ", "Unied", "inective", "higly"}
+	for _, bad := range badWords {
+		if strings.Contains(strings.ToLower(text), bad) {
+			t.Errorf("Found ligature/spelling bug %q in Word2Vec: %s", bad, findSnippets(text, bad))
+		}
+	}
+}
+
+func TestLiveResNetPaperExtraction(t *testing.T) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get("https://arxiv.org/pdf/1512.03385")
+	if err != nil {
+		t.Skipf("Network unavailable: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	start := time.Now()
+	text, title, err := ExtractTextFromPDF(body)
+	elapsed := time.Since(start)
+	t.Logf("ResNet Extraction took: %v (words=%d, title=%q)", elapsed, len(strings.Fields(text)), title)
+
+	if err != nil {
+		t.Fatalf("ExtractTextFromPDF failed: %v", err)
+	}
+
+	if !strings.Contains(title, "Deep Residual Learning") {
+		t.Errorf("Expected title containing 'Deep Residual Learning', got %q", title)
+	}
+}
+
+func TestLiveBERTPaperExtraction(t *testing.T) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get("https://arxiv.org/pdf/1810.04805")
+	if err != nil {
+		t.Skipf("Network unavailable: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read body: %v", err)
+	}
+
+	start := time.Now()
+	text, title, err := ExtractTextFromPDF(body)
+	elapsed := time.Since(start)
+	t.Logf("BERT Extraction took: %v (words=%d, title=%q)", elapsed, len(strings.Fields(text)), title)
+
+	if err != nil {
+		t.Fatalf("ExtractTextFromPDF failed: %v", err)
+	}
+
+	if !strings.Contains(title, "BERT: Pre-training") {
+		t.Errorf("Expected title containing 'BERT: Pre-training', got %q", title)
+	}
+}
+
 func findSnippets(text, term string) string {
 	var res []string
 	lines := strings.Split(text, "\n")
 	for _, l := range lines {
-		if strings.Contains(l, term) {
+		if strings.Contains(strings.ToLower(l), strings.ToLower(term)) {
 			res = append(res, l)
 			if len(res) >= 3 {
 				break

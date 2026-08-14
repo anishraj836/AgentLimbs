@@ -394,3 +394,135 @@ func TestExtractTitleFromCleanedText_OutOfOrderStreams(t *testing.T) {
 		t.Errorf("Expected 'Attention Is All You Need', got %q", title)
 	}
 }
+
+func TestExtractPDFStreams_BalancedReverseDictionaryScanner(t *testing.T) {
+	// 1. Nested dictionary with outer /Type /XObject and /Subtype /Image
+	pdfWithNestedImage := []byte("%PDF-1.4\n1 0 obj\n<< /Type /XObject /Resources << /Font << /F1 1 0 R >> >> /Subtype /Image /Length 10 >>\nstream\n0123456789\nendstream\nendobj\n2 0 obj\n<< /Length 85 >>\nstream\nBT /F1 12 Tf (Extracted text from valid content stream with enough words to pass requirement.) Tj ET\nendstream\nendobj\ntrailer\n<< /Root 2 0 R >>\n%%EOF")
+
+	streams := extractPDFStreams(pdfWithNestedImage)
+	if len(streams) != 2 {
+		t.Fatalf("Expected 2 streams, got %d", len(streams))
+	}
+
+	// First stream should have outer dictionary captured and should be skipped
+	if !shouldSkipPDFStream(streams[0].dict) {
+		t.Errorf("Expected stream 0 with image subtype in outer dict to be skipped, dict: %q", streams[0].dict)
+	}
+
+	// Second stream should NOT be skipped
+	if shouldSkipPDFStream(streams[1].dict) {
+		t.Errorf("Expected content stream 1 to NOT be skipped, dict: %q", streams[1].dict)
+	}
+
+	// 2. Test comprehensive token filters in shouldSkipPDFStream
+	skipTokensTest := []struct {
+		dict     string
+		expected bool
+	}{
+		{"<< /Type /Font /Subtype /Type1 >>", true},
+		{"<< /Subtype /Image /Filter /DCTDecode >>", true},
+		{"<< /Subtype /Type1C >>", true},
+		{"<< /Subtype /CIDFontType0C >>", true},
+		{"<< /Subtype /OpenType >>", true},
+		{"<< /Subtype /TrueType >>", true},
+		{"<< /FontFile2 12 0 R >>", true},
+		{"<< /FontDescriptor 10 0 R >>", true},
+		{"<< /CIDSet 5 0 R >>", true},
+		{"<< /ToUnicode 8 0 R >>", true},
+		{"<< /Type /Metadata /Subtype /XML >>", true},
+		{"<< /Alternate /DeviceRGB /ICCBased 4 0 R >>", true},
+		{"<< /ColorSpace /DeviceCMYK >>", true},
+		{"<< /Filter /JPXDecode >>", true},
+		{"<< /Filter /JBIG2Decode >>", true},
+		{"<< /Filter /CCITTFaxDecode >>", true},
+		{"<< /Type /XRef >>", true},
+		{"<< /Type /ObjStm >>", true},
+		{"<< /Type /3D >>", true},
+		{"<< /Type /Sound >>", true},
+		{"<< /Type /Movie >>", true},
+		{"<< /Length 1234 /Filter /FlateDecode >>", false},
+		{"<< /Length 500 >>", false},
+	}
+
+	for _, tc := range skipTokensTest {
+		res := shouldSkipPDFStream(tc.dict)
+		if res != tc.expected {
+			t.Errorf("shouldSkipPDFStream(%q) = %v, expected %v", tc.dict, res, tc.expected)
+		}
+	}
+}
+
+func TestExtractTextFromBTBlocks_BoundedETScan(t *testing.T) {
+	// Block with unclosed BT followed by a valid BT...ET block
+	malformed := []byte("BT (unclosed text without ET) " + strings.Repeat("x", 200) + "\nBT (Valid Second Block Text) Tj ET")
+	extracted := extractTextFromBTBlocks(malformed)
+	if len(extracted) == 0 {
+		t.Fatalf("Expected extracted text from valid second block, got nil")
+	}
+	if !strings.Contains(extracted[0], "Valid Second Block Text") {
+		t.Errorf("Expected extracted text to contain 'Valid Second Block Text', got %q", extracted[0])
+	}
+}
+
+func TestExtractTitle_MultiTierAndContinuationStitching(t *testing.T) {
+	// 1. Continuation stitching with 'in' connector (Word2Vec pattern)
+	w2vText := "Efficient Estimation of Word Representations in\nVector Space\nTomas Mikolov, Kai Chen, Greg Corrado, Jeffrey Dean\nGoogle Inc., Mountain View, CA\nAbstract\nWe propose two novel model architectures for computing continuous vector representations of words from very large data sets."
+	w2vTitle := extractTitleFromCleanedText(w2vText)
+	if w2vTitle != "Efficient Estimation of Word Representations in Vector Space" {
+		t.Errorf("Expected stitched title 'Efficient Estimation of Word Representations in Vector Space', got %q", w2vTitle)
+	}
+
+	// 2. Continuation stitching with 'for' connector (BERT / ResNet pattern)
+	bertText := "BERT: Pre-training of Deep Bidirectional Transformers for\nLanguage Understanding\nJacob Devlin Ming-Wei Chang Kenton Lee Kristina Toutanova\nGoogle AI Language\n{jacobdevlin,mingweichang,kentonl,kristout}@google.com\nAbstract\nWe introduce a new language representation model called BERT."
+	bertTitle := extractTitleFromCleanedText(bertText)
+	if bertTitle != "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding" {
+		t.Errorf("Expected stitched title 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding', got %q", bertTitle)
+	}
+
+	// 3. Anchor-assisted forward scan without explicit Abstract header
+	anchorText := "Scalable Machine Learning Algorithms for Massive Datasets\nJohn Doe, Jane Smith\njohn.doe@university.edu\nDepartment of Computer Science\n1 Introduction\nMassive datasets require scalable algorithms."
+	anchorTitle := extractTitleFromCleanedText(anchorText)
+	if anchorTitle != "Scalable Machine Learning Algorithms for Massive Datasets" {
+		t.Errorf("Expected anchor-assisted title 'Scalable Machine Learning Algorithms for Massive Datasets', got %q", anchorTitle)
+	}
+}
+
+func TestRepairCommonMissingLigatures_Comprehensive(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected string
+	}{
+		// Efficiency and capitalization
+		{"high efciency and ecient algorithms", "high efficiency and efficient algorithms"},
+		{"Efciency is important.", "Efficiency is important."},
+		// Simplified and avoid simplifify
+		{"a simplied approach was proposed", "a simplified approach was proposed"},
+		{"Simplied models are fast.", "Simplified models are fast."},
+		// Define and capitalization
+		{"we dene the objective function", "we define the objective function"},
+		{"Dened as follows:", "Defined as follows:"},
+		// Inflect
+		{"inectional morphology and inective rules", "inflectional morphology and inflective rules"},
+		// Unified
+		{"a Unied framework for vision", "a Unified framework for vision"},
+		{"unied representation", "unified representation"},
+		// Highly
+		{"a higly scalable network", "a highly scalable network"},
+		{"Higly effective method", "Highly effective method"},
+		// Find words / Find verb
+		{"nd words with similar meaning", "find words with similar meaning"},
+		{"nd representations in vector space", "find representations in vector space"},
+		{"we can nd meaningful patterns", "we can find meaningful patterns"},
+		{"to nd optimal parameters", "to find optimal parameters"},
+		// Five types
+		{"there are ve types of embeddings", "there are five types of embeddings"},
+		{"ve models were evaluated", "five models were evaluated"},
+	}
+
+	for _, tc := range testCases {
+		res := repairCommonMissingLigatures(tc.input)
+		if res != tc.expected {
+			t.Errorf("repairCommonMissingLigatures(%q) = %q, expected %q", tc.input, res, tc.expected)
+		}
+	}
+}
