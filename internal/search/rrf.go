@@ -101,13 +101,21 @@ func ReciprocalRankFusion(
 		var score float64
 
 		bmRank, inBM25 := bm25Ranks[docID]
-		if inBM25 {
+		if inBM25 && bm25Scores[docID] > 0 {
 			score += 1.0 / (RRFConstant + float64(bmRank))
+		} else {
+			bmRank = -1
 		}
 
 		vecRank, inVec := vectorRanks[docID]
-		if inVec {
+		if inVec && vectorSims[docID] > 0 {
 			score += 1.0 / (RRFConstant + float64(vecRank))
+		} else {
+			vecRank = -1
+		}
+
+		if score <= 0.000001 {
+			continue
 		}
 
 		title := ""

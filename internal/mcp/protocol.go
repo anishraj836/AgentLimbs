@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/crawler-monorepo/agent-service/api"
 	"github.com/crawler-monorepo/internal/crawler"
@@ -150,8 +152,20 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 		switch params.Name {
 		case "agent_limbs_scrape":
 			targetURL, _ := params.Arguments["url"].(string)
+			targetURL = strings.TrimSpace(targetURL)
 			if targetURL == "" {
 				toolResult = CallToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: "Missing required argument 'url'"}}}
+				break
+			}
+
+			parsedURL, err := url.Parse(targetURL)
+			if err != nil || parsedURL.Scheme == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+				toolResult = CallToolResult{
+					IsError: true,
+					Content: []ToolContent{
+						{Type: "text", Text: fmt.Sprintf("Invalid URL format: URL must begin with http:// or https:// (got '%s')", targetURL)},
+					},
+				}
 				break
 			}
 
@@ -161,6 +175,16 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 			res, err := client.Fetch(ctx, targetURL)
 			if err != nil || res == nil || res.Response == nil {
 				toolResult = CallToolResult{IsError: true, Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Scrape failed: %v", err)}}}
+				break
+			}
+
+			if res.Response.StatusCode != 200 {
+				toolResult = CallToolResult{
+					IsError: true,
+					Content: []ToolContent{
+						{Type: "text", Text: fmt.Sprintf("Scrape rejected: Target URL returned HTTP status %d (%s). Document was not indexed.", res.Response.StatusCode, res.Response.Status)},
+					},
+				}
 				break
 			}
 
@@ -191,6 +215,26 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 			}
 
 			markdownContent, _, title := extractor.ConvertHTMLToMarkdown(targetURL, bodyBytes, mode)
+			cleanMarkdown := strings.TrimSpace(markdownContent)
+			wordCount := len(strings.Fields(cleanMarkdown))
+			lowerTitle := strings.ToLower(title)
+			lowerContent := strings.ToLower(cleanMarkdown)
+
+			isSoft404 := wordCount < 15 ||
+				strings.Contains(lowerTitle, "404 not found") ||
+				strings.Contains(lowerTitle, "page not found") ||
+				strings.Contains(lowerContent, "404 - page not found") ||
+				strings.Contains(lowerContent, "404 page not found")
+
+			if isSoft404 {
+				toolResult = CallToolResult{
+					IsError: true,
+					Content: []ToolContent{
+						{Type: "text", Text: fmt.Sprintf("Scrape rejected: Target URL '%s' returned soft 404 or empty content. Document was not indexed.", res.FinalURL)},
+					},
+				}
+				break
+			}
 
 			totalTokens := len(markdownContent) / 4
 
@@ -220,9 +264,14 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 			index.GlobalEngine.IndexDocumentDirectly(res.FinalURL, title, markdownContent, totalTokens)
 			_ = index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, res.FinalURL)
 
+			displayText := markdownContent
+			if len(displayText) > 300000 {
+				displayText = displayText[:300000] + "\n\n... [Content truncated for MCP tool response payload display. Entire document has been indexed into memory and is searchable via agent_limbs_hybrid_search]"
+			}
+
 			toolResult = CallToolResult{
 				Content: []ToolContent{
-					{Type: "text", Text: fmt.Sprintf("Successfully scraped and indexed %s\nTitle: %s\n\nContent:\n%s", res.FinalURL, title, markdownContent)},
+					{Type: "text", Text: fmt.Sprintf("Successfully scraped and indexed %s\nTitle: %s\n\nContent:\n%s", res.FinalURL, title, displayText)},
 				},
 			}
 
@@ -237,30 +286,31 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 			if val, ok := params.Arguments["limit"]; ok && val != nil {
 				switch v := val.(type) {
 				case float64:
-					if int(v) > 0 {
-						limit = int(v)
-					}
+					limit = int(v)
 				case float32:
-					if int(v) > 0 {
-						limit = int(v)
-					}
+					limit = int(v)
 				case int:
-					if v > 0 {
-						limit = v
-					}
+					limit = v
 				case int64:
-					if v > 0 {
-						limit = int(v)
-					}
+					limit = int(v)
 				case string:
-					if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+					if parsed, err := strconv.Atoi(v); err == nil {
 						limit = parsed
 					}
 				case json.Number:
-					if parsed, err := v.Int64(); err == nil && parsed > 0 {
+					if parsed, err := v.Int64(); err == nil {
 						limit = int(parsed)
 					}
 				}
+			}
+
+			if limit <= 0 {
+				toolResult = CallToolResult{
+					Content: []ToolContent{
+						{Type: "text", Text: "[]"},
+					},
+				}
+				break
 			}
 
 			if limit > 100 {
