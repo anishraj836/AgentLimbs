@@ -164,6 +164,20 @@ services:
     stdin_open: true
     tty: true
 
+  gateway:
+    image: caddy:2.7-alpine
+    container_name: gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - agent-service
+      - search-service
+    networks:
+      - crawler_network
+
 volumes:
   zk-data:
   zk-log:

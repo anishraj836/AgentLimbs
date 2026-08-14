@@ -206,7 +206,7 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Tenant-ID, traceparent, X-Request-ID")
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusOK)

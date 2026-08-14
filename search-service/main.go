@@ -13,8 +13,10 @@ import (
 	"github.com/crawler-monorepo/common/kafka"
 	"github.com/crawler-monorepo/common/logger"
 	appMiddleware "github.com/crawler-monorepo/common/middleware"
-	"github.com/crawler-monorepo/internal/index"
 	"github.com/crawler-monorepo/common/redis"
+	"github.com/crawler-monorepo/common/tracing"
+	"github.com/crawler-monorepo/internal/auth"
+	"github.com/crawler-monorepo/internal/index"
 	"github.com/crawler-monorepo/internal/storage"
 	"github.com/crawler-monorepo/search-service/api"
 	"github.com/go-chi/chi/v5"
@@ -90,6 +92,8 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(appMiddleware.RequestIDMiddleware)
+	r.Use(tracing.TracingMiddleware)
+	r.Use(auth.TenantMiddleware)
 
 	r.Post("/search", handler.Search)
 	r.Get("/search", handler.Search)

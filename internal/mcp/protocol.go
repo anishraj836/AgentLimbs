@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"time"
 
+	"github.com/crawler-monorepo/agent-service/api"
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
 	"github.com/crawler-monorepo/internal/index"
@@ -73,7 +73,12 @@ type CallToolResult struct {
 func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 	var req JSONRPCRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, err
+		errResp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      nil,
+			Error:   &RPCError{Code: -32700, Message: "Parse error: " + err.Error()},
+		}
+		return json.Marshal(errResp)
 	}
 
 	switch req.Method {
@@ -188,8 +193,30 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 			markdownContent, _, title := extractor.ConvertHTMLToMarkdown(targetURL, bodyBytes, mode)
 
 			totalTokens := len(markdownContent) / 4
-			ttlDuration := time.Duration(ttlSeconds) * time.Second
-			_ = storage.SaveCrawledDocumentWithTTL(ctx, res.FinalURL, title, markdownContent, totalTokens, "mcp_scraped", targetURL, ttlDuration)
+
+			ttlDuration, hasTTL := api.ClampTTL(ttlSeconds)
+			if hasTTL {
+				_ = storage.SaveCrawledDocumentWithTTL(
+					context.Background(),
+					res.FinalURL,
+					title,
+					markdownContent,
+					totalTokens,
+					"mcp_scraped",
+					targetURL,
+					ttlDuration,
+				)
+			} else {
+				_ = storage.SaveCrawledDocument(
+					context.Background(),
+					res.FinalURL,
+					title,
+					markdownContent,
+					totalTokens,
+					"mcp_scraped",
+					targetURL,
+				)
+			}
 			_ = index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, res.FinalURL)
 
 			toolResult = CallToolResult{

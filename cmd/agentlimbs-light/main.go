@@ -23,7 +23,9 @@ import (
 	"github.com/crawler-monorepo/common/ratelimit"
 	"github.com/crawler-monorepo/common/stemmer"
 	"github.com/crawler-monorepo/common/stopwords"
+	"github.com/crawler-monorepo/common/tracing"
 	"github.com/crawler-monorepo/common/utils"
+	"github.com/crawler-monorepo/internal/auth"
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
 	"github.com/crawler-monorepo/internal/index"
@@ -244,7 +246,12 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON request payload"})
+			return
+		}
 	} else {
 		req.Query = r.URL.Query().Get("q")
 		if req.Query == "" {
@@ -438,11 +445,13 @@ func (s *EmbeddedServer) SetupRouter() http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(appMiddleware.RequestIDMiddleware)
+	r.Use(tracing.TracingMiddleware)
+	r.Use(auth.TenantMiddleware)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Tenant-ID, traceparent, X-Request-ID")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusOK)
 				return

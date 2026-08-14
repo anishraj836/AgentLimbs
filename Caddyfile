@@ -1,0 +1,45 @@
+# AgentLimbs Enterprise Reverse Proxy & Automatic TLS Termination
+
+{
+    admin off
+    auto_https off
+}
+
+:80 {
+    # CORS Headers
+    header {
+        Access-Control-Allow-Origin "*"
+        Access-Control-Allow-Methods "GET, POST, OPTIONS"
+        Access-Control-Allow-Headers "Content-Type, X-API-Key, Authorization, X-Tenant-ID, traceparent, X-Request-ID"
+    }
+
+    # Route /v1/scrape, /v1/extract, /v1/agent/* to Agent Service (:8090)
+    handle /v1/scrape* {
+        reverse_proxy agent-service:8090
+    }
+    handle /v1/extract* {
+        reverse_proxy agent-service:8090
+    }
+    handle /v1/agent/* {
+        reverse_proxy agent-service:8090
+    }
+
+    # Route /v1/search, /v1/web-search, /v1/agentic-search, /v1/autocomplete to Search Service (:8088)
+    handle /v1/search* {
+        reverse_proxy search-service:8088
+    }
+    handle /v1/web-search* {
+        reverse_proxy agent-service:8090
+    }
+    handle /v1/agentic-search* {
+        reverse_proxy agent-service:8090
+    }
+    handle /v1/autocomplete* {
+        reverse_proxy search-service:8088
+    }
+
+    # Default fallback to agentlimbs-light embedded server (:8080)
+    handle {
+        reverse_proxy agentlimbs-light:8080
+    }
+}

@@ -123,6 +123,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		fusedHits = filtered
 	}
 
+	totalMatchingHits := len(fusedHits)
 	hits := fusedHits
 	if req.Offset >= len(hits) {
 		hits = []search.HybridSearchHit{}
@@ -138,7 +139,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(SearchResponse{
 		Query:     req.Query,
-		TotalHits: len(hits),
+		TotalHits: totalMatchingHits,
 		LatencyMs: latency,
 		Results:   hits,
 	})

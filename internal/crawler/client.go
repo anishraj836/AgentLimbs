@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/crawler-monorepo/common/middleware"
+	"github.com/crawler-monorepo/common/tracing"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -611,6 +613,18 @@ func (c *Client) Fetch(ctx context.Context, targetURL string) (*FetchResult, err
 
 		profile := GetRotatedHeaderProfile()
 		ApplyAntiBotHeaders(req, profile)
+
+		if reqID, ok := ctx.Value(middleware.RequestIDKey).(string); ok && reqID != "" {
+			req.Header.Set("X-Request-ID", reqID)
+		} else if reqID, ok := ctx.Value("x-request-id").(string); ok && reqID != "" {
+			req.Header.Set("X-Request-ID", reqID)
+		}
+
+		if span, ok := tracing.FromContext(ctx); ok && span != nil {
+			req.Header.Set("traceparent", span.ToW3CHeader())
+		} else if traceHeader, ok := ctx.Value("traceparent").(string); ok && traceHeader != "" {
+			req.Header.Set("traceparent", traceHeader)
+		}
 
 		resp, err := c.client.Do(req)
 		if err != nil {

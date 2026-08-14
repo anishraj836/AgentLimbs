@@ -12,8 +12,10 @@ import (
 	"github.com/crawler-monorepo/common/config"
 	"github.com/crawler-monorepo/common/logger"
 	appMiddleware "github.com/crawler-monorepo/common/middleware"
-	"github.com/crawler-monorepo/internal/index"
 	"github.com/crawler-monorepo/common/redis"
+	"github.com/crawler-monorepo/common/tracing"
+	"github.com/crawler-monorepo/internal/auth"
+	"github.com/crawler-monorepo/internal/index"
 	"github.com/crawler-monorepo/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -59,6 +61,8 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(appMiddleware.RequestIDMiddleware)
+	r.Use(tracing.TracingMiddleware)
+	r.Use(auth.TenantMiddleware)
 	r.Use(api.SecurityMiddleware(execMode, apiKey, rateLimiter))
 
 	r.Post("/v1/scrape", handler.Scrape)

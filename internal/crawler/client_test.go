@@ -5,9 +5,41 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/crawler-monorepo/common/middleware"
+	"github.com/crawler-monorepo/common/tracing"
 )
+
+func TestOutboundContextHeaderPropagation(t *testing.T) {
+	var gotReqID, gotTraceparent string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReqID = r.Header.Get("X-Request-ID")
+		gotTraceparent = r.Header.Get("traceparent")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer ts.Close()
+
+	client := NewTestClient(true)
+	span, ctx := tracing.StartSpan(context.Background(), "test_fetch")
+	ctx = context.WithValue(ctx, middleware.RequestIDKey, "req-test-uuid-999")
+
+	_, err := client.Fetch(ctx, ts.URL)
+	if err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+
+	if gotReqID != "req-test-uuid-999" {
+		t.Errorf("expected X-Request-ID 'req-test-uuid-999', got '%s'", gotReqID)
+	}
+
+	if !strings.HasPrefix(gotTraceparent, "00-"+span.TraceID) {
+		t.Errorf("expected traceparent starting with '00-%s', got '%s'", span.TraceID, gotTraceparent)
+	}
+}
 
 func TestIsPrivateIP(t *testing.T) {
 	tests := []struct {
