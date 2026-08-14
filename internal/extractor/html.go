@@ -191,16 +191,30 @@ func isIgnoredNode(n *html.Node, mode string) bool {
 		return false
 	}
 	tag := strings.ToLower(n.Data)
+	if tag == "header" {
+		return isTopLevelPageHeader(n)
+	}
 	ignored := map[string]bool{
 		"script": true, "style": true, "noscript": true, "iframe": true,
-		"nav": true, "footer": true, "header": true,
+		"nav": true, "footer": true,
 	}
 	if mode != "raw" {
 		ignored["form"] = true
 		ignored["svg"] = true
-		ignored["aside"] = true
 	}
 	return ignored[tag]
+}
+
+func isTopLevelPageHeader(n *html.Node) bool {
+	p := n.Parent
+	for p != nil {
+		pTag := strings.ToLower(p.Data)
+		if pTag == "main" || pTag == "article" || pTag == "section" {
+			return false
+		}
+		p = p.Parent
+	}
+	return true
 }
 
 func getNodeText(n *html.Node, depth int) string {

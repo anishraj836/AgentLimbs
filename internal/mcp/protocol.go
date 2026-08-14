@@ -217,11 +217,15 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 					targetURL,
 				)
 			}
+			index.GlobalEngine.IndexDocumentDirectly(res.FinalURL, title, markdownContent, totalTokens)
+			if targetURL != "" && targetURL != res.FinalURL {
+				index.GlobalEngine.IndexDocumentDirectly(targetURL, title, markdownContent, totalTokens)
+			}
 			_ = index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, res.FinalURL)
 
 			toolResult = CallToolResult{
 				Content: []ToolContent{
-					{Type: "text", Text: fmt.Sprintf("Successfully scraped %s\nTitle: %s\n\nContent:\n%s", res.FinalURL, title, markdownContent)},
+					{Type: "text", Text: fmt.Sprintf("Successfully scraped and indexed %s\nTitle: %s\n\nContent:\n%s", res.FinalURL, title, markdownContent)},
 				},
 			}
 
@@ -272,6 +276,15 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 			}
 
 			titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
+			if len(titles) == 0 {
+				toolResult = CallToolResult{
+					Content: []ToolContent{
+						{Type: "text", Text: fmt.Sprintf("No indexed documents found in memory for query '%s'. Scrape target URLs first using agent_limbs_scrape.", query)},
+					},
+				}
+				break
+			}
+
 			bm25Hits := index.GlobalEngine.Inverted.RankDocuments(
 				query,
 				titles,
@@ -281,6 +294,9 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 			)
 			vectorHits := index.GlobalEngine.SearchVector(query, fetchK)
 			fusedHits := search.ReciprocalRankFusion(query, bm25Hits, vectorHits, limit, titles, urls, bodies)
+			if fusedHits == nil {
+				fusedHits = []search.HybridSearchHit{}
+			}
 
 			resJSON, _ := json.MarshalIndent(fusedHits, "", "  ")
 			toolResult = CallToolResult{

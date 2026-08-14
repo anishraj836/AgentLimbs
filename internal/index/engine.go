@@ -935,6 +935,44 @@ func (e *Engine) IndexDocumentIncrementalByURL(ctx context.Context, targetURL st
 	return nil
 }
 
+func (e *Engine) IndexDocumentDirectly(docURL, title, cleanBody string, totalTokens int) {
+	if docURL == "" || cleanBody == "" {
+		return
+	}
+	if totalTokens <= 0 {
+		totalTokens = len(cleanBody) / 4
+	}
+
+	rawTokens := strings.Fields(strings.ToLower(cleanBody))
+	termPositions := make(map[string][]int)
+	for idx, raw := range rawTokens {
+		clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
+		if clean == "" || stopwords.IsStopword(clean) {
+			continue
+		}
+		stemmed := stemmer.Stem(clean)
+		termPositions[stemmed] = append(termPositions[stemmed], idx)
+	}
+
+	shard := e.getShard(docURL)
+	shard.mu.Lock()
+	shard.titles[docURL] = title
+	shard.urls[docURL] = docURL
+	shard.bodies[docURL] = cleanBody
+	shard.mu.Unlock()
+
+	e.mu.RLock()
+	inv := e.Inverted
+	trie := e.Trie
+	e.mu.RUnlock()
+
+	inv.AddDocument(docURL, termPositions, totalTokens)
+	for term, positions := range termPositions {
+		trie.Insert(term, len(positions))
+	}
+	e.IndexDocumentVector(docURL, title, cleanBody)
+}
+
 func (e *Engine) GetDocumentMetadata(docID string) (title, url, body string, exists bool) {
 	shard := e.getShard(docID)
 	shard.mu.RLock()
