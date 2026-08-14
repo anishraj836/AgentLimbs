@@ -218,9 +218,6 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 				)
 			}
 			index.GlobalEngine.IndexDocumentDirectly(res.FinalURL, title, markdownContent, totalTokens)
-			if targetURL != "" && targetURL != res.FinalURL {
-				index.GlobalEngine.IndexDocumentDirectly(targetURL, title, markdownContent, totalTokens)
-			}
 			_ = index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, res.FinalURL)
 
 			toolResult = CallToolResult{

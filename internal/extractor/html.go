@@ -307,8 +307,39 @@ func formatASTInlineText(n *html.Node, baseURL *url.URL, mode string, depth int)
 	return sb.String()
 }
 
+func hasBlockChildren(n *html.Node) bool {
+	if n == nil {
+		return false
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode {
+			tag := strings.ToLower(c.Data)
+			switch tag {
+			case "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table", "pre", "blockquote", "div", "section", "article", "header", "footer", "main", "nav", "aside":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode string, depth int) {
 	if n == nil || depth > 128 {
+		return
+	}
+
+	if n.Type == html.TextNode {
+		t := strings.TrimSpace(n.Data)
+		if t != "" && n.Parent != nil {
+			pTag := strings.ToLower(n.Parent.Data)
+			switch pTag {
+			case "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "pre", "a", "code", "table", "th", "td", "script", "style", "title", "head":
+				return
+			default:
+				sb.WriteString(fmt.Sprintf("%s\n\n", t))
+				return
+			}
+		}
 		return
 	}
 
@@ -375,6 +406,14 @@ func renderASTBody(n *html.Node, sb *strings.Builder, baseURL *url.URL, mode str
 				sb.WriteString(fmt.Sprintf("```\n%s\n```\n\n", t))
 			}
 			return
+		case "div", "section", "article", "span", "aside":
+			if !hasBlockChildren(n) {
+				t := strings.TrimSpace(formatASTInlineText(n, baseURL, mode, depth+1))
+				if t != "" {
+					sb.WriteString(fmt.Sprintf("%s\n\n", t))
+					return
+				}
+			}
 		}
 	}
 
