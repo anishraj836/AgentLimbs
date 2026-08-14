@@ -1,19 +1,49 @@
 # 🦾 AgentLimbs
 
-> **High-Performance Web Crawler, Hybrid RAG Search Engine, DuckDuckGo Metasearch, DeepSeek Agentic Reasoner, and Model Context Protocol (MCP) Server for AI Agents.**
+> **A self-hostable web retrieval layer for AI Agents.**  
+> Give agents access to the web without coupling them to a third-party scraping or search API. AgentLimbs crawls and cleans web pages, incrementally indexes them using hybrid BM25 + semantic retrieval, and exposes the resulting capabilities through HTTP and MCP.
 
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Standard-purple.svg)](https://modelcontextprotocol.io/)
 [![OpenAPI 3.0](https://img.shields.io/badge/OpenAPI-3.0-green.svg)](openapi.json)
 
-**AgentLimbs** is a production-grade, token-efficient web ingestion, HTML extraction, and hybrid RAG search platform built in **Go**. It empowers AI Agents, LLM pipelines, and developer workflows to scrape, parse, index, and query web pages with microsecond-to-millisecond search latencies.
+---
+
+## 💡 The Problem & The Abstraction
+
+Most AI agents face a core dilemma when interacting with the web:
+1. **Raw Web Pages Waste Tokens**: Scraping raw HTML with `<script>`, `<style>`, and cookie banners burns thousands of context window tokens per request.
+2. **Third-Party API Coupling**: Relying on SaaS APIs (like Tavily or Jina) introduces external API costs, latency, vendor lock-in, and privacy risks for internal data.
+3. **Scrapers Aren't Search Engines**: Standard web scrapers only return raw Markdown—they don't store or search what they've scraped.
+
+**AgentLimbs** acts as the dedicated **sensory and motor layer** for AI Agents. It receives raw web requests or natural language queries, cleans HTML into token-efficient Markdown, indexes content incrementally in-memory, and provides hybrid keyword+vector search across the agent's web memory.
+
+```text
+                     AI Agent (Claude / Ollama / Custom)
+                                     │
+                                    MCP
+                                     │
+                               ┌───────────┐
+                               │ AgentLimbs│
+                               └─────┬─────┘
+                                     │
+                    ┌────────────────┴────────────────┐
+                    ↓                                 ↓
+               Web Crawler                       Search Engine
+                    │                                 │
+             HTML ➔ Markdown                    BM25 + Vector RRF
+                    │                                 │
+                    └────────────────┬────────────────┘
+                                     ↓
+                             In-Memory Index
+```
 
 ---
 
 ## 🌟 Key Capabilities
 
-- **🚀 Dual Deployment Modes**: Run as a lightweight, single-binary embedded server (`cmd/agentlimbs-light`) with zero external dependencies, or as a distributed 9-microservice event-driven stack via Docker Compose.
+- **🚀 Dual Deployment Modes**: Run as a lightweight, single-binary embedded server (`cmd/agentlimbs-light`) with zero external dependencies (~25MB RAM), or as a distributed 9-microservice event-driven stack via Docker Compose.
 - **🌳 HTML DOM AST Extractor (`internal/extractor`)**: Replaces fragile regex stripping with official Go DOM tree walking (`golang.org/x/net/html`) to convert web pages into clean, token-efficient Markdown (up to **82% token savings** over raw HTML, averaging **5.6x reduction**).
 - **🌐 Live DuckDuckGo Metasearch Engine (`internal/search/metasearch.go`)**: Performs real-time web engine queries, fetches target links concurrently using `errgroup` concurrency, deduplicates inflight queries via `singleflight`, parses DOM into RAG Markdown, and indexes web results on-the-fly into memory.
 - **🤖 DeepSeek Agentic AI Reasoning (`internal/search/agentic.go`)**: Autonomous multi-step RAG pipeline (Query Intent Decomposition → Multi-Source Web & Vector Ingestion → DeepSeek V3/R1 Context Reasoning & Answer Synthesis with inline citations), with automatic deterministic local RAG summary fallback when LLM keys are absent.
