@@ -106,3 +106,29 @@ func TestMCPHybridSearchLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPHybridSearchNegativeLimit(t *testing.T) {
+	req := `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"agent_limbs_hybrid_search","arguments":{"query":"golang","limit":-5}}}`
+	respBytes, err := HandleRPCMessage([]byte(req), nil)
+	if err != nil {
+		t.Fatalf("HandleRPCMessage failed: %v", err)
+	}
+
+	var resp struct {
+		JSONRPC string         `json:"jsonrpc"`
+		ID      int            `json:"id"`
+		Result  CallToolResult `json:"result"`
+	}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if !resp.Result.IsError {
+		t.Fatalf("Expected IsError: true for negative limit, got false")
+	}
+
+	expectedText := "Invalid limit parameter: limit must be a non-negative integer (got -5)"
+	if len(resp.Result.Content) == 0 || resp.Result.Content[0].Text != expectedText {
+		t.Fatalf("Expected error text '%s', got '%v'", expectedText, resp.Result.Content)
+	}
+}

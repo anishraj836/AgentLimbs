@@ -730,6 +730,8 @@ type Engine struct {
 	Trie           *Trie
 	Vector         *VectorIndex
 	ActiveEmbedder Embedder
+	aliasesMu      sync.RWMutex
+	aliases        map[string]string
 }
 
 type IndexEngine = Engine
@@ -752,6 +754,7 @@ func NewEngine() *Engine {
 		Trie:           NewTrie(),
 		Vector:         NewVectorIndex(active.Dimensions()),
 		ActiveEmbedder: active,
+		aliases:        make(map[string]string),
 	}
 	for i := 0; i < 64; i++ {
 		e.shards[i].titles = make(map[string]string)
@@ -759,6 +762,27 @@ func NewEngine() *Engine {
 		e.shards[i].bodies = make(map[string]string)
 	}
 	return e
+}
+
+func (e *Engine) AddAlias(aliasURL, canonicalURL string) {
+	if aliasURL == "" || canonicalURL == "" || aliasURL == canonicalURL {
+		return
+	}
+	e.aliasesMu.Lock()
+	if e.aliases == nil {
+		e.aliases = make(map[string]string)
+	}
+	e.aliases[aliasURL] = canonicalURL
+	e.aliasesMu.Unlock()
+}
+
+func (e *Engine) ResolveURL(targetURL string) string {
+	e.aliasesMu.RLock()
+	defer e.aliasesMu.RUnlock()
+	if canonical, ok := e.aliases[targetURL]; ok && canonical != "" {
+		return canonical
+	}
+	return targetURL
 }
 
 func NewIndexEngine() *Engine {
@@ -895,7 +919,8 @@ func (e *Engine) StartTTLJanitor(ctx context.Context, interval time.Duration) {
 }
 
 func (e *Engine) IndexDocumentIncrementalByURL(ctx context.Context, targetURL string) error {
-	doc, err := storage.GetCrawledDocumentByURL(ctx, targetURL)
+	canonicalURL := e.ResolveURL(targetURL)
+	doc, err := storage.GetCrawledDocumentByURL(ctx, canonicalURL)
 	if err != nil {
 		return err
 	}
@@ -935,9 +960,13 @@ func (e *Engine) IndexDocumentIncrementalByURL(ctx context.Context, targetURL st
 	return nil
 }
 
-func (e *Engine) IndexDocumentDirectly(docURL, title, cleanBody string, totalTokens int) {
+func (e *Engine) IndexDocumentDirectly(docURL, title, cleanBody string, totalTokens int, aliasURL ...string) {
 	if docURL == "" || cleanBody == "" {
 		return
+	}
+	if len(aliasURL) > 0 && aliasURL[0] != "" && aliasURL[0] != docURL {
+		e.AddAlias(aliasURL[0], docURL)
+		_ = storage.SaveURLAlias(context.Background(), aliasURL[0], docURL)
 	}
 	if totalTokens <= 0 {
 		totalTokens = len(cleanBody) / 4
@@ -974,12 +1003,13 @@ func (e *Engine) IndexDocumentDirectly(docURL, title, cleanBody string, totalTok
 }
 
 func (e *Engine) GetDocumentMetadata(docID string) (title, url, body string, exists bool) {
-	shard := e.getShard(docID)
+	canonicalID := e.ResolveURL(docID)
+	shard := e.getShard(canonicalID)
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
-	title, exists = shard.titles[docID]
-	url = shard.urls[docID]
-	body = shard.bodies[docID]
+	title, exists = shard.titles[canonicalID]
+	url = shard.urls[canonicalID]
+	body = shard.bodies[canonicalID]
 	return
 }
 

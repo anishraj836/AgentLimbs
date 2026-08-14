@@ -108,7 +108,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	if req.Mode == "bm25" {
 		filtered := make([]search.HybridSearchHit, 0)
 		for _, hit := range fusedHits {
-			if hit.BM25Rank > 0 {
+			if hit.BM25Rank != nil && *hit.BM25Rank > 0 {
 				filtered = append(filtered, hit)
 			}
 		}
@@ -116,7 +116,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	} else if req.Mode == "vector" {
 		filtered := make([]search.HybridSearchHit, 0)
 		for _, hit := range fusedHits {
-			if hit.VectorRank > 0 {
+			if hit.VectorRank != nil && *hit.VectorRank > 0 {
 				filtered = append(filtered, hit)
 			}
 		}

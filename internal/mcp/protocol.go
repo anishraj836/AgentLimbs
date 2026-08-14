@@ -261,7 +261,11 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 					targetURL,
 				)
 			}
-			index.GlobalEngine.IndexDocumentDirectly(res.FinalURL, title, markdownContent, totalTokens)
+			if res.FinalURL != targetURL {
+				index.GlobalEngine.AddAlias(targetURL, res.FinalURL)
+				_ = storage.SaveURLAlias(context.Background(), targetURL, res.FinalURL)
+			}
+			index.GlobalEngine.IndexDocumentDirectly(res.FinalURL, title, markdownContent, totalTokens, targetURL)
 			_ = index.GlobalEngine.IndexDocumentIncrementalByURL(ctx, res.FinalURL)
 
 			displayText := markdownContent
@@ -304,7 +308,17 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
 				}
 			}
 
-			if limit <= 0 {
+			if limit < 0 {
+				toolResult = CallToolResult{
+					IsError: true,
+					Content: []ToolContent{
+						{Type: "text", Text: fmt.Sprintf("Invalid limit parameter: limit must be a non-negative integer (got %d)", limit)},
+					},
+				}
+				break
+			}
+
+			if limit == 0 {
 				toolResult = CallToolResult{
 					Content: []ToolContent{
 						{Type: "text", Text: "[]"},

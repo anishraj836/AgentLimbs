@@ -285,7 +285,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Mode == "bm25" {
 		filtered := make([]search.HybridSearchHit, 0)
 		for _, h := range fusedHits {
-			if h.BM25Rank > 0 {
+			if h.BM25Rank != nil && *h.BM25Rank > 0 {
 				filtered = append(filtered, h)
 			}
 		}
@@ -293,7 +293,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	} else if req.Mode == "vector" {
 		filtered := make([]search.HybridSearchHit, 0)
 		for _, h := range fusedHits {
-			if h.VectorRank > 0 {
+			if h.VectorRank != nil && *h.VectorRank > 0 {
 				filtered = append(filtered, h)
 			}
 		}

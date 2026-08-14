@@ -162,10 +162,38 @@ func GetCrawledDocuments(ctx context.Context) ([]CrawledDocument, error) {
 	return getFromFileFallback()
 }
 
+var (
+	aliasMu    sync.RWMutex
+	urlAliases = make(map[string]string)
+)
+
+// SaveURLAlias stores an alias mapping from aliasURL to canonicalURL.
+func SaveURLAlias(ctx context.Context, aliasURL, canonicalURL string) error {
+	if aliasURL == "" || canonicalURL == "" || aliasURL == canonicalURL {
+		return nil
+	}
+	aliasMu.Lock()
+	urlAliases[aliasURL] = canonicalURL
+	aliasMu.Unlock()
+	return nil
+}
+
+// GetURLAlias resolves an alias URL to its canonical URL if registered.
+func GetURLAlias(aliasURL string) string {
+	aliasMu.RLock()
+	defer aliasMu.RUnlock()
+	if canonical, exists := urlAliases[aliasURL]; exists && canonical != "" {
+		return canonical
+	}
+	return aliasURL
+}
+
 func GetCrawledDocumentByURL(ctx context.Context, targetURL string) (*CrawledDocument, error) {
+	canonicalURL := GetURLAlias(targetURL)
+
 	if Pool != nil {
-		query := `SELECT id, url, title, clean_body, total_tokens, COALESCE(source_type, 'web_crawled'), COALESCE(source_url, url), expires_at FROM crawled_pages WHERE url = $1 AND (expires_at IS NULL OR expires_at > NOW());`
-		row := Pool.QueryRow(ctx, query, targetURL)
+		query := `SELECT id, url, title, clean_body, total_tokens, COALESCE(source_type, 'web_crawled'), COALESCE(source_url, url), expires_at FROM crawled_pages WHERE (url = $1 OR url = $2 OR source_url = $1 OR source_url = $2) AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY id ASC LIMIT 1;`
+		row := Pool.QueryRow(ctx, query, targetURL, canonicalURL)
 		var doc CrawledDocument
 		err := row.Scan(&doc.ID, &doc.URL, &doc.Title, &doc.CleanBody, &doc.TotalTokens, &doc.SourceType, &doc.SourceURL, &doc.ExpiresAt)
 		if err == nil {
@@ -181,7 +209,7 @@ func GetCrawledDocumentByURL(ctx context.Context, targetURL string) (*CrawledDoc
 		return nil, err
 	}
 	for _, d := range docs {
-		if d.URL == targetURL {
+		if d.URL == targetURL || d.URL == canonicalURL || d.SourceURL == targetURL || d.SourceURL == canonicalURL {
 			return &d, nil
 		}
 	}

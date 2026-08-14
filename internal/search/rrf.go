@@ -16,8 +16,8 @@ type HybridSearchHit struct {
 	RRFScore    float64 `json:"rrf_score"`
 	BM25Score   float64 `json:"bm25_score"`
 	VectorSim   float64 `json:"vector_similarity"`
-	BM25Rank    int     `json:"bm25_rank"`
-	VectorRank  int     `json:"vector_rank"`
+	BM25Rank    *int    `json:"bm25_rank"`
+	VectorRank  *int    `json:"vector_rank"`
 	Title       string  `json:"title"`
 	URL         string  `json:"url"`
 	SourceType  string  `json:"source_type"`
@@ -86,8 +86,8 @@ func ReciprocalRankFusion(
 		rawRRF     float64
 		bm25Score  float64
 		vectorSim  float64
-		bmRank     int
-		vecRank    int
+		bmRankPtr  *int
+		vecRankPtr *int
 		title      string
 		url        string
 		sourceType string
@@ -100,18 +100,20 @@ func ReciprocalRankFusion(
 	for docID := range allDocIDs {
 		var score float64
 
+		var bmRankPtr *int
 		bmRank, inBM25 := bm25Ranks[docID]
 		if inBM25 && bm25Scores[docID] > 0 {
 			score += 1.0 / (RRFConstant + float64(bmRank))
-		} else {
-			bmRank = -1
+			r := bmRank
+			bmRankPtr = &r
 		}
 
+		var vecRankPtr *int
 		vecRank, inVec := vectorRanks[docID]
 		if inVec && vectorSims[docID] > 0 {
 			score += 1.0 / (RRFConstant + float64(vecRank))
-		} else {
-			vecRank = -1
+			r := vecRank
+			vecRankPtr = &r
 		}
 
 		if score <= 0.000001 {
@@ -173,8 +175,8 @@ func ReciprocalRankFusion(
 			rawRRF:     score,
 			bm25Score:  bm25Scores[docID],
 			vectorSim:  vectorSims[docID],
-			bmRank:     bmRank,
-			vecRank:    vecRank,
+			bmRankPtr:  bmRankPtr,
+			vecRankPtr: vecRankPtr,
 			title:      title,
 			url:        url,
 			sourceType: sourceType,
@@ -201,8 +203,8 @@ func ReciprocalRankFusion(
 			RRFScore:   math.Round(c.rawRRF*100000) / 100000,
 			BM25Score:  c.bm25Score,
 			VectorSim:  c.vectorSim,
-			BM25Rank:   c.bmRank,
-			VectorRank: c.vecRank,
+			BM25Rank:   c.bmRankPtr,
+			VectorRank: c.vecRankPtr,
 			Title:      c.title,
 			URL:        c.url,
 			SourceType: c.sourceType,

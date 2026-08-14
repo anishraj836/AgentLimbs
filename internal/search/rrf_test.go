@@ -47,3 +47,44 @@ func TestKeywordTitleBoostReranking(t *testing.T) {
 		t.Errorf("Expected 'doc2' to rank first due to title & snippet match boost, got '%s'", reranked[0].DocID)
 	}
 }
+
+func TestUnrankedRanksJSONSchema(t *testing.T) {
+	bm25Hits := []index.SearchHit{
+		{DocID: "doc1", Score: 2.5, Title: "Doc 1"},
+	}
+
+	vectorHits := []index.VectorSearchResult{
+		{DocID: "doc3", Similarity: 0.85},
+	}
+
+	fused := ReciprocalRankFusion("", bm25Hits, vectorHits, 5)
+
+	var doc1Hit, doc3Hit *HybridSearchHit
+	for i := range fused {
+		if fused[i].DocID == "doc1" {
+			doc1Hit = &fused[i]
+		} else if fused[i].DocID == "doc3" {
+			doc3Hit = &fused[i]
+		}
+	}
+
+	if doc1Hit == nil || doc3Hit == nil {
+		t.Fatalf("Expected both doc1 and doc3 in fused hits")
+	}
+
+	// doc1 matched BM25, unranked in Vector
+	if doc1Hit.BM25Rank == nil || *doc1Hit.BM25Rank != 1 {
+		t.Errorf("Expected doc1 BM25Rank to be &1, got %v", doc1Hit.BM25Rank)
+	}
+	if doc1Hit.VectorRank != nil {
+		t.Errorf("Expected doc1 VectorRank to be nil (null in JSON), got %v", *doc1Hit.VectorRank)
+	}
+
+	// doc3 unranked in BM25, matched Vector
+	if doc3Hit.BM25Rank != nil {
+		t.Errorf("Expected doc3 BM25Rank to be nil (null in JSON), got %v", *doc3Hit.BM25Rank)
+	}
+	if doc3Hit.VectorRank == nil || *doc3Hit.VectorRank != 1 {
+		t.Errorf("Expected doc3 VectorRank to be &1, got %v", doc3Hit.VectorRank)
+	}
+}

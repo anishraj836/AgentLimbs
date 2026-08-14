@@ -138,3 +138,29 @@ func TestIndexDocumentIncrementalByURL(t *testing.T) {
 		t.Errorf("Expected both doc1 and doc2 in index after incremental add, got doc1=%v, doc2=%v", foundDoc1, foundDoc2)
 	}
 }
+
+func TestURLAliasDeduplication(t *testing.T) {
+	eng := NewEngine()
+	targetURL := "http://example.com"
+	canonicalURL := "https://example.com/canonical"
+
+	eng.IndexDocumentDirectly(canonicalURL, "Canonical Page", "Content of canonical page with unique text", 6, targetURL)
+
+	// Verify metadata lookup by canonical URL
+	title1, _, _, exists1 := eng.GetDocumentMetadata(canonicalURL)
+	if !exists1 || title1 != "Canonical Page" {
+		t.Errorf("Expected canonical URL lookup to succeed, got title '%s', exists=%v", title1, exists1)
+	}
+
+	// Verify metadata lookup by target/alias URL resolves to canonical document
+	title2, _, _, exists2 := eng.GetDocumentMetadata(targetURL)
+	if !exists2 || title2 != "Canonical Page" {
+		t.Errorf("Expected alias URL lookup to resolve to canonical document, got title '%s', exists=%v", title2, exists2)
+	}
+
+	// Verify no duplicate entries in metadata maps
+	titles, _, _ := eng.GetMetadataMaps()
+	if len(titles) != 1 {
+		t.Errorf("Expected exactly 1 metadata entry (deduplicated), got %d entries", len(titles))
+	}
+}

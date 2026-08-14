@@ -41,6 +41,22 @@ func ConvertHTMLToMarkdown(sourceURL string, htmlBytes []byte, mode string) (mar
 		mode = "clean_rag"
 	}
 
+	if IsPDF(htmlBytes) {
+		text, pdfTitle, err := ExtractTextFromPDF(htmlBytes)
+		if err != nil {
+			errText := fmt.Sprintf("# PDF Extraction Error\n\n%v", err)
+			return errText, CountBPETokens(errText), sourceURL
+		}
+		if pdfTitle == "" {
+			pdfTitle = sourceURL
+		}
+		md := text
+		if !strings.HasPrefix(strings.TrimSpace(md), "# ") {
+			md = fmt.Sprintf("# %s\n\n%s", pdfTitle, md)
+		}
+		return md, CountBPETokens(md), pdfTitle
+	}
+
 	doc, err := html.Parse(bytes.NewReader(htmlBytes))
 	if err != nil {
 		return string(htmlBytes), CountBPETokens(string(htmlBytes)), sourceURL
