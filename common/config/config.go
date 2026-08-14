@@ -34,10 +34,10 @@ func LoadAndValidate() (*Config, error) {
 		cfg.ExecutionMode = "local"
 	}
 	switch strings.ToLower(cfg.ExecutionMode) {
-	case "local", "distributed", "embedded":
+	case "local", "distributed", "embedded", "cloud":
 		// valid
 	default:
-		return nil, fmt.Errorf("invalid EXECUTION_MODE '%s': must be one of ['local', 'distributed', 'embedded']", cfg.ExecutionMode)
+		return nil, fmt.Errorf("invalid EXECUTION_MODE '%s': must be one of ['local', 'distributed', 'embedded', 'cloud']", cfg.ExecutionMode)
 	}
 
 	if cfg.DatabaseURL != "" {

@@ -51,6 +51,7 @@ type SearchRequest struct {
 	Query  string `json:"query"`
 	Limit  int    `json:"limit"`
 	Offset int    `json:"offset"`
+	Mode   string `json:"mode,omitempty"`
 }
 
 type SearchResponse struct {
@@ -73,6 +74,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		req.Query = r.URL.Query().Get("q")
+		req.Mode = r.URL.Query().Get("mode")
 		req.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 		req.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
 	}
@@ -98,9 +100,30 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		bodies,
 		fetchK,
 	)
-	vectorHits := h.engine.SearchVector(req.Query, fetchK)
-	hits := search.ReciprocalRankFusion(req.Query, bm25Hits, vectorHits, fetchK, titles, urls, bodies)
 
+	vecHits := h.engine.SearchVector(req.Query, fetchK)
+
+	fusedHits := search.ReciprocalRankFusion(req.Query, bm25Hits, vecHits, fetchK, titles, urls, bodies)
+
+	if req.Mode == "bm25" {
+		filtered := make([]search.HybridSearchHit, 0)
+		for _, hit := range fusedHits {
+			if hit.BM25Rank > 0 {
+				filtered = append(filtered, hit)
+			}
+		}
+		fusedHits = filtered
+	} else if req.Mode == "vector" {
+		filtered := make([]search.HybridSearchHit, 0)
+		for _, hit := range fusedHits {
+			if hit.VectorRank > 0 {
+				filtered = append(filtered, hit)
+			}
+		}
+		fusedHits = filtered
+	}
+
+	hits := fusedHits
 	if req.Offset >= len(hits) {
 		hits = []search.HybridSearchHit{}
 	} else {

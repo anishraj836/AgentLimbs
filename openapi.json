@@ -1,161 +1,219 @@
 {
-  "openapi": "3.0.0",
+  "openapi": "3.0.3",
   "info": {
-    "title": "AgentLimbs AI Web Scraper & Hybrid Search API",
-    "description": "High-performance, token-efficient web scraping, structured JSON extraction, and BM25 + Vector RRF hybrid search engine for AI agents.",
+    "title": "AgentLimbs API",
+    "description": "High-performance Web Crawler, Hybrid BM25 + Vector RAG Search Engine, DuckDuckGo Metasearch, DeepSeek Agentic Reasoner, and Model Context Protocol (MCP) API Specification.",
     "version": "1.0.0"
   },
   "servers": [
     {
-      "url": "https://api.agentlimbs.dev",
-      "description": "AgentLimbs Production Server"
+      "url": "http://localhost:8080",
+      "description": "Single-Binary Embedded Server (agentlimbs-light)"
+    },
+    {
+      "url": "http://localhost:8090",
+      "description": "Agent Microservice (agent-service)"
+    },
+    {
+      "url": "http://localhost:8088",
+      "description": "Search Microservice (search-service)"
     }
   ],
+  "security": [
+    { "ApiKeyAuth": [] },
+    { "BearerAuth": [] }
+  ],
   "paths": {
-    "/v1/scrape": {
-      "post": {
-        "summary": "Scrape Web Page to Clean Markdown",
-        "description": "Fetches a URL, strips boilerplate noise, and returns token-efficient Markdown.",
-        "operationId": "scrapeWebPage",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "url": {
-                    "type": "string",
-                    "description": "Target website URL to scrape"
-                  },
-                  "mode": {
-                    "type": "string",
-                    "description": "Extraction mode: clean_rag (default), preserve_links, or raw"
-                  }
-                },
-                "required": ["url"]
-              }
-            }
-          }
-        },
+    "/health": {
+      "get": {
+        "summary": "Health Check Status",
+        "description": "Returns system health status, memory stats, and current deployment mode.",
         "responses": {
-          "200": {
-            "description": "Successful markdown extraction",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "url": { "type": "string" },
-                    "title": { "type": "string" },
-                    "markdown": { "type": "string" },
-                    "token_estimate": { "type": "integer" }
-                  }
-                }
-              }
-            }
-          }
+          "200": { "description": "System Healthy" }
         }
       }
     },
-    "/v1/agent/query": {
+    "/v1/scrape": {
       "post": {
-        "summary": "Hybrid RRF Search Over Corpus",
-        "description": "Searches indexed web corpus using BM25 keyword matching and vector semantic similarity.",
-        "operationId": "hybridSearchCorpus",
+        "summary": "Scrape and Auto-Index Web Page",
+        "description": "Fetches target website URL, converts HTML to clean Markdown, and auto-indexes into memory.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
+                "required": ["url"],
                 "properties": {
-                  "query": {
-                    "type": "string",
-                    "description": "Search query or topic"
-                  },
-                  "top_k": {
-                    "type": "integer",
-                    "description": "Number of results to return (default 5)"
-                  }
-                },
-                "required": ["query"]
+                  "url": { "type": "string", "example": "https://go.dev" },
+                  "mode": { "type": "string", "enum": ["clean_rag", "preserve_links", "raw"], "default": "clean_rag" },
+                  "ttl_seconds": { "type": "integer", "example": 86400 }
+                }
               }
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "Top ranked search hits",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "total_hits": { "type": "integer" },
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "title": { "type": "string" },
-                          "url": { "type": "string" },
-                          "snippet": { "type": "string" },
-                          "rrf_score": { "type": "number" }
-                        }
-                      }
-                    }
-                  }
+          "200": { "description": "Web Page Successfully Scraped & Indexed" }
+        }
+      },
+      "get": {
+        "summary": "Scrape Web Page via Query String",
+        "parameters": [
+          { "name": "url", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "mode", "in": "query", "schema": { "type": "string", "enum": ["clean_rag", "preserve_links", "raw"] } },
+          { "name": "ttl_seconds", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Scrape Response" }
+        }
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "summary": "Hybrid BM25 + Vector RRF Search",
+        "description": "Executes Reciprocal Rank Fusion search across the indexed corpus.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": { "type": "string", "example": "goroutine scheduler" },
+                  "top_k": { "type": "integer", "default": 5 },
+                  "mode": { "type": "string", "enum": ["hybrid", "bm25", "vector"], "default": "hybrid" }
                 }
               }
             }
           }
+        },
+        "responses": {
+          "200": { "description": "Ranked Hybrid Search Hits" }
+        }
+      },
+      "get": {
+        "summary": "Hybrid Search via GET",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "top_k", "in": "query", "schema": { "type": "integer", "default": 5 } },
+          { "name": "mode", "in": "query", "schema": { "type": "string", "enum": ["hybrid", "bm25", "vector"] } }
+        ],
+        "responses": {
+          "200": { "description": "Search Hits" }
+        }
+      }
+    },
+    "/v1/web-search": {
+      "post": {
+        "summary": "Live DuckDuckGo Metasearch & Instant Ingestion",
+        "description": "Queries live web search, crawls target URLs, parses HTML to Markdown, and indexes results on-the-fly.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": { "type": "string", "example": "go 1.23 release notes" },
+                  "top_k": { "type": "integer", "default": 5 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Live Web Search Hits" }
+        }
+      }
+    },
+    "/v1/agentic-search": {
+      "post": {
+        "summary": "DeepSeek Agentic AI Reasoning Pipeline",
+        "description": "Autonomous multi-step RAG pipeline: Query Decomposition -> Live Web Ingestion -> DeepSeek Reasoning & Answer Synthesis.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": { "type": "string" },
+                  "model": { "type": "string", "default": "deepseek-chat" },
+                  "llm_api_key": { "type": "string" },
+                  "llm_base_url": { "type": "string" },
+                  "top_k": { "type": "integer", "default": 5 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Synthesized Answer with Trace Steps & Citations" }
+        }
+      }
+    },
+    "/v1/autocomplete": {
+      "get": {
+        "summary": "In-Memory Trie Prefix Autocomplete",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 5 } }
+        ],
+        "responses": {
+          "200": { "description": "Prefix Autocomplete Suggestions" }
         }
       }
     },
     "/v1/extract": {
       "post": {
         "summary": "Structured JSON Field Extractor",
-        "description": "Extracts custom structured key-value JSON fields from web Markdown.",
-        "operationId": "extractStructuredJSON",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
+                "required": ["url", "fields"],
                 "properties": {
-                  "url": {
-                    "type": "string",
-                    "description": "Target website URL"
-                  },
-                  "fields": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Fields to extract"
-                  }
-                },
-                "required": ["url", "fields"]
+                  "url": { "type": "string" },
+                  "fields": { "type": "array", "items": { "type": "string" } }
+                }
               }
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "Extracted JSON fields",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "url": { "type": "string" },
-                    "extracted": { "type": "object" }
-                  }
-                }
-              }
-            }
-          }
+          "200": { "description": "Extracted Structured Key-Value Pairs" }
         }
+      }
+    },
+    "/v1/agent/query": {
+      "post": {
+        "summary": "Agent Service Hybrid Query",
+        "responses": { "200": { "description": "Hybrid Query Results" } }
+      }
+    },
+    "/v1/agent/tools": {
+      "get": {
+        "summary": "Expose OpenAI-Compatible Agent Tools",
+        "responses": { "200": { "description": "Agent Tools Definitions" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      },
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

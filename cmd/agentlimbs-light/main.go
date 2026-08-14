@@ -228,6 +228,7 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 type SearchRequest struct {
 	Query string `json:"query"`
 	TopK  int    `json:"top_k"`
+	Mode  string `json:"mode,omitempty"`
 }
 
 type SearchResponse struct {
@@ -243,12 +244,13 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 	} else {
 		req.Query = r.URL.Query().Get("q")
 		if req.Query == "" {
 			req.Query = r.URL.Query().Get("query")
 		}
+		req.Mode = r.URL.Query().Get("mode")
 		req.TopK, _ = strconv.Atoi(r.URL.Query().Get("top_k"))
 	}
 
@@ -272,6 +274,24 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	vecHits := index.GlobalEngine.SearchVector(req.Query, req.TopK*2)
 
 	fusedHits := search.ReciprocalRankFusion(req.Query, bm25Hits, vecHits, req.TopK, titles, urls, bodies)
+
+	if req.Mode == "bm25" {
+		filtered := make([]search.HybridSearchHit, 0)
+		for _, h := range fusedHits {
+			if h.BM25Rank > 0 {
+				filtered = append(filtered, h)
+			}
+		}
+		fusedHits = filtered
+	} else if req.Mode == "vector" {
+		filtered := make([]search.HybridSearchHit, 0)
+		for _, h := range fusedHits {
+			if h.VectorRank > 0 {
+				filtered = append(filtered, h)
+			}
+		}
+		fusedHits = filtered
+	}
 
 	latency := float64(time.Since(t0).Microseconds()) / 1000.0
 

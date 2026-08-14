@@ -232,10 +232,16 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 			if apiKey != "" {
 				clientKey := r.Header.Get("X-API-Key")
 				if clientKey == "" {
+					authHeader := r.Header.Get("Authorization")
+					if strings.HasPrefix(authHeader, "Bearer ") {
+						clientKey = strings.TrimPrefix(authHeader, "Bearer ")
+					}
+				}
+				if clientKey == "" {
 					clientKey = r.URL.Query().Get("api_key")
 				}
 				if clientKey == "" || subtle.ConstantTimeCompare([]byte(clientKey), []byte(apiKey)) != 1 {
-					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header"}`, http.StatusUnauthorized)
+					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header or Authorization Bearer token"}`, http.StatusUnauthorized)
 					return
 				}
 			}
