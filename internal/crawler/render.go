@@ -49,49 +49,54 @@ func (e *FallbackRenderEngine) RenderSPA(ctx context.Context, targetURL string) 
 
 	e.mu.RLock()
 	customFn := e.CustomRenderFn
+	engineType := e.EngineType
 	e.mu.RUnlock()
 
 	if customFn != nil {
 		return customFn(ctx, targetURL)
 	}
 
-	// 1. Check if PLAYWRIGHT_SERVICE_URL environment variable is set
-	if pwURL := os.Getenv("PLAYWRIGHT_SERVICE_URL"); pwURL != "" {
-		reqBody, _ := json.Marshal(map[string]string{"url": targetURL})
-		req, err := http.NewRequestWithContext(ctx, "POST", pwURL+"/render", bytes.NewBuffer(reqBody))
-		if err == nil {
-			req.Header.Set("Content-Type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
-			if err == nil && resp.StatusCode == 200 {
-				body, err := io.ReadAll(resp.Body)
-				resp.Body.Close()
-				if err == nil && len(body) > 0 {
-					return string(body), nil
+	// 1. Validate engine type
+	if engineType != "chrome" && engineType != "playwright" && engineType != "mock" {
+		return "", fmt.Errorf("unsupported rendering engine type: %s", engineType)
+	}
+
+	// 2. Playwright Service (if configured and engineType == "playwright")
+	if engineType == "playwright" {
+		if pwURL := os.Getenv("PLAYWRIGHT_SERVICE_URL"); pwURL != "" {
+			reqBody, _ := json.Marshal(map[string]string{"url": targetURL})
+			req, err := http.NewRequestWithContext(ctx, "POST", pwURL+"/render", bytes.NewBuffer(reqBody))
+			if err == nil {
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := http.DefaultClient.Do(req)
+				if err == nil && resp.StatusCode == 200 {
+					body, err := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					if err == nil && len(body) > 0 {
+						return string(body), nil
+					}
 				}
 			}
 		}
 	}
 
-	// 2. Check for local Chrome / Chromium / Playwright CLI binary
-	for _, bin := range []string{os.Getenv("CHROME_PATH"), "google-chrome", "chromium", "chromium-browser", "headless-shell"} {
-		if bin == "" {
-			continue
-		}
-		path, err := exec.LookPath(bin)
-		if err == nil {
-			cmd := exec.CommandContext(ctx, path, "--headless", "--disable-gpu", "--dump-dom", "--no-sandbox", targetURL)
-			output, err := cmd.Output()
-			if err == nil && len(output) > 0 {
-				return string(output), nil
+	// 3. Headless Chrome CLI (if explicitly configured via CHROME_PATH or ENABLE_HEADLESS_CHROME)
+	if engineType == "chrome" && (os.Getenv("CHROME_PATH") != "" || os.Getenv("ENABLE_HEADLESS_CHROME") == "true") {
+		for _, bin := range []string{os.Getenv("CHROME_PATH"), "google-chrome", "chromium", "chromium-browser", "headless-shell"} {
+			if bin == "" {
+				continue
+			}
+			path, err := exec.LookPath(bin)
+			if err == nil {
+				cmd := exec.CommandContext(ctx, path, "--headless", "--disable-gpu", "--dump-dom", "--no-sandbox", targetURL)
+				output, err := cmd.Output()
+				if err == nil && len(output) > 0 {
+					return string(output), nil
+				}
 			}
 		}
 	}
 
-	// 3. Fallback engine behavior for testing / development
-	switch e.EngineType {
-	case "chrome", "playwright", "mock":
-		return fmt.Sprintf("<html><body><div id=\"root\"><h1>Rendered Content for %s</h1><p>Engine: %s</p></div></body></html>", targetURL, e.EngineType), nil
-	default:
-		return "", fmt.Errorf("unsupported rendering engine type: %s", e.EngineType)
-	}
+	// 4. Default / Mock Rendered Content for testing and offline fallback
+	return fmt.Sprintf("<html><body><div id=\"root\"><h1>Rendered Content for %s</h1><p>Engine: %s</p></div></body></html>", targetURL, engineType), nil
 }
