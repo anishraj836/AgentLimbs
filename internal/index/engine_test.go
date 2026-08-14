@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/crawler-monorepo/internal/storage"
 )
@@ -85,6 +86,14 @@ func TestSnapshotSaveLoad(t *testing.T) {
 	pl, exists := eng2.Inverted.GetPostingList("test")
 	if !exists || len(pl.Entries) == 0 {
 		t.Errorf("Expected inverted index to contain 'test' entry after restore")
+	}
+
+	// Verify temporary files are cleaned up
+	if _, err := os.Stat(filepath.Join(tmpDir, "inverted_index.json.tmp")); !os.IsNotExist(err) {
+		t.Errorf("Expected inverted_index.json.tmp to not exist after successful save")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "vector_index.json.tmp")); !os.IsNotExist(err) {
+		t.Errorf("Expected vector_index.json.tmp to not exist after successful save")
 	}
 }
 
@@ -218,3 +227,41 @@ func TestVectorIndexSaveSnapshotDeepCopyConcurrency(t *testing.T) {
 	<-done
 }
 
+func TestEmpiricalSemanticSimilarityAndScanScaling(t *testing.T) {
+	// 1. Measure exact cosine similarity between semantic synonyms vs morphological variants
+	vCar := GenerateFeatureVector("car", 128)
+	vAutomobile := GenerateFeatureVector("automobile", 128)
+	vVehicle := GenerateFeatureVector("vehicle", 128)
+	vSportsCar := GenerateFeatureVector("sports car", 128)
+	vCars := GenerateFeatureVector("cars", 128)
+
+	simCarAuto := CosineSimilarity(vCar, vAutomobile)
+	simCarVehicle := CosineSimilarity(vCar, vVehicle)
+	simCarSports := CosineSimilarity(vCar, vSportsCar)
+	simCarCars := CosineSimilarity(vCar, vCars)
+
+	t.Logf("Empirical Cosine Similarity:")
+	t.Logf("  'car' vs 'automobile': %.4f", simCarAuto)
+	t.Logf("  'car' vs 'vehicle':    %.4f", simCarVehicle)
+	t.Logf("  'car' vs 'sports car': %.4f", simCarSports)
+	t.Logf("  'car' vs 'cars':       %.4f", simCarCars)
+
+	// 2. Measure flat O(N) vector scan latency across 1k, 10k, and 50k vectors
+	sizes := []int{1000, 10000, 50000}
+	for _, size := range sizes {
+		vi := NewVectorIndex(128)
+		qVec := GenerateFeatureVector("search query test", 128)
+		for i := 0; i < size; i++ {
+			_ = vi.AddVector(string(rune(i)), GenerateFeatureVector(string(rune(i*37)), 128))
+		}
+
+		// Warm up and measure
+		start := time.Now()
+		runs := 50
+		for r := 0; r < runs; r++ {
+			_ = vi.SearchNearest(qVec, 10)
+		}
+		avgDuration := time.Since(start) / time.Duration(runs)
+		t.Logf("Flat O(N) scan latency for N=%d vectors: %v/query", size, avgDuration)
+	}
+}

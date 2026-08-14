@@ -55,8 +55,6 @@ func IsMediaResourceURL(targetURL string) bool {
 	return mediaExtensions[ext]
 }
 
-// Private IP Checking
-
 func getIPFromAddr(addr net.Addr) net.IP {
 	if addr == nil {
 		return nil
@@ -77,7 +75,7 @@ func getIPFromAddr(addr net.Addr) net.IP {
 	}
 }
 
-// IsPrivateIP checks if an IP is loopback, private RFC1918, CGNAT, link-local metadata, or IPv6 private.
+// IsPrivateIP reports whether an IP is loopback, RFC1918 private, link-local, or reserved.
 func IsPrivateIP(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -125,8 +123,7 @@ func IsPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// Anti-Bot Header Profiles & Rotation
-
+// HeaderProfile represents HTTP client identification and browser header configuration.
 type HeaderProfile struct {
 	UserAgent       string
 	SecChUa         string
@@ -173,11 +170,13 @@ var Chrome122Profiles = []HeaderProfile{
 
 var profileIndex uint64
 
+// GetRotatedHeaderProfile returns a round-robin browser header configuration.
 func GetRotatedHeaderProfile() HeaderProfile {
 	idx := atomic.AddUint64(&profileIndex, 1)
 	return Chrome122Profiles[idx%uint64(len(Chrome122Profiles))]
 }
 
+// ApplyAntiBotHeaders applies realistic browser headers to an outgoing HTTP request.
 func ApplyAntiBotHeaders(req *http.Request, profile HeaderProfile) {
 	req.Header.Set("User-Agent", profile.UserAgent)
 	req.Header.Set("Sec-Ch-Ua", profile.SecChUa)
@@ -192,8 +191,7 @@ func ApplyAntiBotHeaders(req *http.Request, profile HeaderProfile) {
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 }
 
-// SPA Detection
-
+// DetectJSShell reports whether HTML content is an empty single-page application shell.
 func DetectJSShell(htmlContent []byte) bool {
 	trimmed := strings.TrimSpace(string(htmlContent))
 	if len(trimmed) < 20 {
@@ -206,7 +204,7 @@ func DetectJSShell(htmlContent []byte) bool {
 	return false
 }
 
-// IsSPAPlaceholder checks if the HTML content represents an empty client-side rendered SPA root container.
+// IsSPAPlaceholder reports whether HTML represents an empty client-rendered container requiring headless execution.
 func IsSPAPlaceholder(html string) bool {
 	trimmed := strings.TrimSpace(html)
 	if trimmed == "" {
@@ -232,19 +230,20 @@ func IsSPAPlaceholder(html string) bool {
 	return false
 }
 
-// Robots.txt Domain Cache
-
+// RobotsGroup defines access directives for a user-agent group in robots.txt.
 type RobotsGroup struct {
 	UserAgent  string
 	Disallowed []string
 	CrawlDelay int
 }
 
+// RobotsData stores parsed robots.txt rules for a domain.
 type RobotsData struct {
 	mu     sync.RWMutex
 	groups []RobotsGroup
 }
 
+// ParseRobotsTxt parses robots.txt content into RobotsData.
 func ParseRobotsTxt(content string) *RobotsData {
 	rd := &RobotsData{groups: make([]RobotsGroup, 0)}
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -292,6 +291,7 @@ func ParseRobotsTxt(content string) *RobotsData {
 	return rd
 }
 
+// IsAllowed reports whether the specified user agent is permitted to crawl the target URL.
 func (rd *RobotsData) IsAllowed(userAgent, targetURL string) bool {
 	rd.mu.RLock()
 	defer rd.mu.RUnlock()
@@ -320,6 +320,7 @@ func (rd *RobotsData) IsAllowed(userAgent, targetURL string) bool {
 	return true
 }
 
+// DomainCacheManager caches parsed robots.txt rules per hostname.
 type DomainCacheManager struct {
 	mu      sync.RWMutex
 	cache   map[string]*RobotsData
@@ -402,6 +403,7 @@ func (cm *DomainCacheManager) EnsureRobotsCached(domain string, fetchFunc func(d
 	return val.(*RobotsData), nil
 }
 
+// IsAllowed reports whether the target URL is permitted by cached robots.txt rules.
 func IsAllowed(userAgent, targetURL string) bool {
 	allowed, cached := GlobalDomainCache.IsDomainAllowed(userAgent, targetURL)
 	if cached {
@@ -410,8 +412,7 @@ func IsAllowed(userAgent, targetURL string) bool {
 	return true
 }
 
-// HTTP Client implementation
-
+// Client performs resilient HTTP fetching with anti-bot headers, robots.txt compliance, and SSR fallback.
 type Client struct {
 	client                  *http.Client
 	allowLoopbackForTesting bool
@@ -419,6 +420,7 @@ type Client struct {
 	RenderEngine            HeadlessRenderer
 }
 
+// FetchResult contains the HTTP response and final resolved URL from a fetch.
 type FetchResult struct {
 	Response *http.Response
 	FinalURL string

@@ -1097,64 +1097,70 @@ var (
 	reHyphenAscii2           = regexp.MustCompile(`(?m)(\w+)-\s*\n\s*(\w+)`)
 	reSpacesGlobal           = regexp.MustCompile(`[ \t]+`)
 
-	// Static pre-compiled lexical ligature repair patterns for unambiguous technical vocabulary
-	reFixFirmly        = regexp.MustCompile(`(?i)\brmly\b`)
-	reFixFirst         = regexp.MustCompile(`(?i)\brst\b`)
-	reFixFlowWord      = regexp.MustCompile(`(?i)\b(information|work|data|signal|cash|air|blood|traffic|control|optical)\s+ow\b`)
-	reFixFinalWord     = regexp.MustCompile(`(?i)\b(the|a|its|their|in the|resulting in the)\s+nal\b`)
-	reFixBeneficial    = regexp.MustCompile(`(?i)\bbeneci(al|ally|aries|ary)\b`)
-	reFixBenefit       = regexp.MustCompile(`(?i)\bbenet(s|ed|ing)?\b`)
-	reFixEfficiency    = regexp.MustCompile(`(?i)\b([eE])(?:f|ff)?cien(t|tly|cy|cies)\b`)
-	reFixSignificant   = regexp.MustCompile(`(?i)\bsignican(t|tly|ce)\b`)
-	reFixDifficult     = regexp.MustCompile(`(?i)\bdifcul(t|ty|ties|tly)\b`)
-	reFixSpecific      = regexp.MustCompile(`(?i)\bspeci(c|cally|cation|cations|ed|es|y)\b`)
-	reFixScientific    = regexp.MustCompile(`(?i)\bscientic\b`)
-	reFixArtificial    = regexp.MustCompile(`(?i)\barticial\b`)
-	reFixSuperficial   = regexp.MustCompile(`(?i)\bsupercial\b`)
-	reFixSufficient    = regexp.MustCompile(`(?i)\bsufcien(t|tly|cy)\b`)
-	reFixInsuffic      = regexp.MustCompile(`(?i)\binsufcien(t|tly|cy)\b`)
-	reFixCoefficient   = regexp.MustCompile(`(?i)\bcoecien(t|ts)\b`)
-	reFixConflict      = regexp.MustCompile(`(?i)\bconic(t|ts|ted|ting)\b`)
-	reFixIdentify      = regexp.MustCompile(`(?i)\bidenti(ed|cation|cations|able|er|ers)\b`)
-	reFixModify        = regexp.MustCompile(`(?i)\bmodi(ed|cation|cations|er|ers|able)\b`)
-	reFixClassify      = regexp.MustCompile(`(?i)\bclassi(ed|cation|cations|er|ers)\b`)
-	reFixVerify        = regexp.MustCompile(`(?i)\bveri(ed|cation|cations|able|er)\b`)
-	reFixJustify       = regexp.MustCompile(`(?i)\bjusti(ed|cation|cations|able)\b`)
-	reFixCertify       = regexp.MustCompile(`(?i)\bcerti(ed|cation|cations)\b`)
-	reFixDefine        = regexp.MustCompile(`(?i)\b([dD])en(e|ed|es|ing|ition|itions)\b`)
-	reFixInfinite      = regexp.MustCompile(`(?i)\binnite(ly)?\b`)
-	reFixInfinity      = regexp.MustCompile(`(?i)\binnity\b`)
-	reFixProfile       = regexp.MustCompile(`(?i)\bprole(s)?\b`)
-	reFixConfirm       = regexp.MustCompile(`(?i)\bconrm(s|ed|ing|ation)?\b`)
-	reFixFigure        = regexp.MustCompile(`(?i)\bgure(s)?\b`)
-	reFixFinancial     = regexp.MustCompile(`(?i)\bnancial(ly)?\b`)
-	reFixQualified     = regexp.MustCompile(`(?i)\bqualied\b`)
-	reFixQuantify      = regexp.MustCompile(`(?i)\bquanti(ed|able|cation)\b`)
-	reFixSimplify      = regexp.MustCompile(`(?i)\b([sS])impli(ed|cation|cations|able|er|ers)\b`)
-	reFixInflect       = regexp.MustCompile(`(?i)\b([iI])nect(ional|ions|ion|ive|ed|ing)\b`)
-	reFixUnified       = regexp.MustCompile(`(?i)\b([uU])ni(ed|es|y)\b`)
-	reFixHighly        = regexp.MustCompile(`(?i)\b([hH])ig(ly|est|er)\b`)
-	reFixFindWords     = regexp.MustCompile(`(?i)\bnd\s+(words?|similar|all|the|a|in|out|patterns?|meaningful|nearest|representations)\b`)
-	reFixFindVerb      = regexp.MustCompile(`(?i)\b(to|can|could|will|would|may|might|should|must|and|or|we|they|you|i)\s+nd\b`)
-	reFixFiveTypes     = regexp.MustCompile(`(?i)\bve\s+(types|categories|classes|methods|approaches|models|layers|dimensions|vectors)\b`)
-	reFixDifferent     = regexp.MustCompile(`(?i)\bdieren(t|tly|ce|ces|tiate|tiation)\b`)
-	reFixEffective     = regexp.MustCompile(`(?i)\beective(ly|ness)?\b`)
-	reFixEffect        = regexp.MustCompile(`(?i)\beect(s|ed|ing)?\b`)
-	reFixAffect        = regexp.MustCompile(`(?i)\baect(s|ed|ing|ive)?\b`)
-	reFixTraffic       = regexp.MustCompile(`(?i)\btrac\b`)
-	reFixOften         = regexp.MustCompile(`(?i)\boen\b`)
-	reFixSuffer        = regexp.MustCompile(`(?i)\bsuer(s|ed|ing)?\b`)
-	reFixOffer         = regexp.MustCompile(`(?i)\boer(s|ed|ing)?\b`)
-	reFixTransformer   = regexp.MustCompile(`(?i)\btransormer(s)?\b`)
-	reFixFlight        = regexp.MustCompile(`(?i)\bight(s)?\b`)
-	reFixFlexible      = regexp.MustCompile(`(?i)\bexible\b`)
-	reFixFlexibility   = regexp.MustCompile(`(?i)\bexibility\b`)
-	reFixFluctuate     = regexp.MustCompile(`(?i)\buctuat(e|ed|ing|ion|ions)\b`)
-
 	// Static bullet formatting regexes
 	reIsolatedBulletLine = regexp.MustCompile(`(?m)^[ \t]*[•\-\*\x1e\x1f\x01-\x08\x10-\x1a][ \t]*\n[ \t]*(\S+)`)
 	reInlineBulletLine   = regexp.MustCompile(`(?m)^[ \t]*[•\x1e\x1f\x01-\x08\x10-\x1a][ \t]+(\S+)`)
 )
+
+type lexicalRepairRule struct {
+	pattern     *regexp.Regexp
+	replacement string
+}
+
+var lexicalRepairRules = []lexicalRepairRule{
+	{pattern: regexp.MustCompile(`(?i)\brmly\b`), replacement: "firmly"},
+	{pattern: regexp.MustCompile(`(?i)\brst\b`), replacement: "first"},
+	{pattern: regexp.MustCompile(`(?i)\b(information|work|data|signal|cash|air|blood|traffic|control|optical)\s+ow\b`), replacement: "$1 flow"},
+	{pattern: regexp.MustCompile(`(?i)\b(the|a|its|their|in the|resulting in the)\s+nal\b`), replacement: "$1 final"},
+	{pattern: regexp.MustCompile(`(?i)\bbeneci(al|ally|aries|ary)\b`), replacement: "benefici$1"},
+	{pattern: regexp.MustCompile(`(?i)\bbenet(s|ed|ing)?\b`), replacement: "benefit$1"},
+	{pattern: regexp.MustCompile(`(?i)\b([eE])(?:f|ff)?cien(t|tly|cy|cies)\b`), replacement: "${1}fficien${2}"},
+	{pattern: regexp.MustCompile(`(?i)\bsignican(t|tly|ce)\b`), replacement: "significan$1"},
+	{pattern: regexp.MustCompile(`(?i)\bdifcul(t|ty|ties|tly)\b`), replacement: "difficul$1"},
+	{pattern: regexp.MustCompile(`(?i)\bspeci(c|cally|cation|cations|ed|es|y)\b`), replacement: "specifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\bscientic\b`), replacement: "scientific"},
+	{pattern: regexp.MustCompile(`(?i)\barticial\b`), replacement: "artificial"},
+	{pattern: regexp.MustCompile(`(?i)\bsupercial\b`), replacement: "superficial"},
+	{pattern: regexp.MustCompile(`(?i)\bsufcien(t|tly|cy)\b`), replacement: "sufficien$1"},
+	{pattern: regexp.MustCompile(`(?i)\binsufcien(t|tly|cy)\b`), replacement: "insufficien$1"},
+	{pattern: regexp.MustCompile(`(?i)\bcoecien(t|ts)\b`), replacement: "coefficien$1"},
+	{pattern: regexp.MustCompile(`(?i)\bconic(t|ts|ted|ting)\b`), replacement: "conflic$1"},
+	{pattern: regexp.MustCompile(`(?i)\bidenti(ed|cation|cations|able|er|ers)\b`), replacement: "identifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\bmodi(ed|cation|cations|er|ers|able)\b`), replacement: "modifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\bclassi(ed|cation|cations|er|ers)\b`), replacement: "classifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\bveri(ed|cation|cations|able|er)\b`), replacement: "verifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\bjusti(ed|cation|cations|able)\b`), replacement: "justifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\bcerti(ed|cation|cations)\b`), replacement: "certifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\b([dD])en(e|ed|es|ing|ition|itions)\b`), replacement: "${1}efin${2}"},
+	{pattern: regexp.MustCompile(`(?i)\binnite(ly)?\b`), replacement: "infinite$1"},
+	{pattern: regexp.MustCompile(`(?i)\binnity\b`), replacement: "infinity"},
+	{pattern: regexp.MustCompile(`(?i)\bprole(s)?\b`), replacement: "profile$1"},
+	{pattern: regexp.MustCompile(`(?i)\bconrm(s|ed|ing|ation)?\b`), replacement: "confirm$1"},
+	{pattern: regexp.MustCompile(`(?i)\bgure(s)?\b`), replacement: "figure$1"},
+	{pattern: regexp.MustCompile(`(?i)\bnancial(ly)?\b`), replacement: "financial$1"},
+	{pattern: regexp.MustCompile(`(?i)\bqualied\b`), replacement: "qualified"},
+	{pattern: regexp.MustCompile(`(?i)\bquanti(ed|able|cation)\b`), replacement: "quantifi$1"},
+	{pattern: regexp.MustCompile(`(?i)\b([sS])impli(ed|cation|cations|able|er|ers)\b`), replacement: "${1}implifi${2}"},
+	{pattern: regexp.MustCompile(`(?i)\b([iI])nect(ional|ions|ion|ive|ed|ing)\b`), replacement: "${1}nflect${2}"},
+	{pattern: regexp.MustCompile(`(?i)\b([uU])ni(ed|es|y)\b`), replacement: "${1}nifi${2}"},
+	{pattern: regexp.MustCompile(`(?i)\b([hH])ig(ly|est|er)\b`), replacement: "${1}igh${2}"},
+	{pattern: regexp.MustCompile(`(?i)\bnd\s+(words?|similar|all|the|a|in|out|patterns?|meaningful|nearest|representations)\b`), replacement: "find $1"},
+	{pattern: regexp.MustCompile(`(?i)\b(to|can|could|will|would|may|might|should|must|and|or|we|they|you|i)\s+nd\b`), replacement: "$1 find"},
+	{pattern: regexp.MustCompile(`(?i)\bve\s+(types|categories|classes|methods|approaches|models|layers|dimensions|vectors)\b`), replacement: "five $1"},
+	{pattern: regexp.MustCompile(`(?i)\bdieren(t|tly|ce|ces|tiate|tiation)\b`), replacement: "differen$1"},
+	{pattern: regexp.MustCompile(`(?i)\beective(ly|ness)?\b`), replacement: "effective$1"},
+	{pattern: regexp.MustCompile(`(?i)\beect(s|ed|ing)?\b`), replacement: "effect$1"},
+	{pattern: regexp.MustCompile(`(?i)\baect(s|ed|ing|ive)?\b`), replacement: "affect$1"},
+	{pattern: regexp.MustCompile(`(?i)\btrac\b`), replacement: "traffic"},
+	{pattern: regexp.MustCompile(`(?i)\boen\b`), replacement: "often"},
+	{pattern: regexp.MustCompile(`(?i)\bsuer(s|ed|ing)?\b`), replacement: "suffer$1"},
+	{pattern: regexp.MustCompile(`(?i)\boer(s|ed|ing)?\b`), replacement: "offer$1"},
+	{pattern: regexp.MustCompile(`(?i)\btransormer(s)?\b`), replacement: "transformer$1"},
+	{pattern: regexp.MustCompile(`(?i)\bight(s)?\b`), replacement: "flight$1"},
+	{pattern: regexp.MustCompile(`(?i)\bexible\b`), replacement: "flexible"},
+	{pattern: regexp.MustCompile(`(?i)\bexibility\b`), replacement: "flexibility"},
+	{pattern: regexp.MustCompile(`(?i)\buctuat(e|ed|ing|ion|ions)\b`), replacement: "fluctuat$1"},
+}
 
 func decomposeLigatures(s string) string {
 	// 1. Convert Type 1 / Latin-1 font encoding bytes (0x96 en-dash, 0x97 em-dash, 0x95 bullet) to valid UTF-8
@@ -1218,59 +1224,9 @@ func decomposeLigatures(s string) string {
 // repairCommonMissingLigatures restores missing ligatures in words where custom PDF font encodings drop ligature glyphs.
 // All patterns are carefully bounded to multi-letter words to NEVER corrupt names like "Nal Kalchbrenner".
 func repairCommonMissingLigatures(text string) string {
-	text = reFixFirmly.ReplaceAllString(text, "firmly")
-	text = reFixFirst.ReplaceAllString(text, "first")
-	text = reFixFlowWord.ReplaceAllString(text, "$1 flow")
-	text = reFixFinalWord.ReplaceAllString(text, "$1 final")
-	text = reFixBeneficial.ReplaceAllString(text, "benefici$1")
-	text = reFixBenefit.ReplaceAllString(text, "benefit$1")
-	text = reFixEfficiency.ReplaceAllString(text, "${1}fficien${2}")
-	text = reFixSignificant.ReplaceAllString(text, "significan$1")
-	text = reFixDifficult.ReplaceAllString(text, "difficul$1")
-	text = reFixSpecific.ReplaceAllString(text, "specifi$1")
-	text = reFixScientific.ReplaceAllString(text, "scientific")
-	text = reFixArtificial.ReplaceAllString(text, "artificial")
-	text = reFixSuperficial.ReplaceAllString(text, "superficial")
-	text = reFixSufficient.ReplaceAllString(text, "sufficien$1")
-	text = reFixInsuffic.ReplaceAllString(text, "insufficien$1")
-	text = reFixCoefficient.ReplaceAllString(text, "coefficien$1")
-	text = reFixConflict.ReplaceAllString(text, "conflic$1")
-	text = reFixIdentify.ReplaceAllString(text, "identifi$1")
-	text = reFixModify.ReplaceAllString(text, "modifi$1")
-	text = reFixClassify.ReplaceAllString(text, "classifi$1")
-	text = reFixVerify.ReplaceAllString(text, "verifi$1")
-	text = reFixJustify.ReplaceAllString(text, "justifi$1")
-	text = reFixCertify.ReplaceAllString(text, "certifi$1")
-	text = reFixDefine.ReplaceAllString(text, "${1}efin${2}")
-	text = reFixInfinite.ReplaceAllString(text, "infinite$1")
-	text = reFixInfinity.ReplaceAllString(text, "infinity")
-	text = reFixProfile.ReplaceAllString(text, "profile$1")
-	text = reFixConfirm.ReplaceAllString(text, "confirm$1")
-	text = reFixFigure.ReplaceAllString(text, "figure$1")
-	text = reFixFinancial.ReplaceAllString(text, "financial$1")
-	text = reFixQualified.ReplaceAllString(text, "qualified")
-	text = reFixQuantify.ReplaceAllString(text, "quantifi$1")
-	text = reFixSimplify.ReplaceAllString(text, "${1}implifi${2}")
-	text = reFixInflect.ReplaceAllString(text, "${1}nflect${2}")
-	text = reFixUnified.ReplaceAllString(text, "${1}nifi${2}")
-	text = reFixHighly.ReplaceAllString(text, "${1}igh${2}")
-	text = reFixFindWords.ReplaceAllString(text, "find $1")
-	text = reFixFindVerb.ReplaceAllString(text, "$1 find")
-	text = reFixFiveTypes.ReplaceAllString(text, "five $1")
-	text = reFixDifferent.ReplaceAllString(text, "differen$1")
-	text = reFixEffective.ReplaceAllString(text, "effective$1")
-	text = reFixEffect.ReplaceAllString(text, "effect$1")
-	text = reFixAffect.ReplaceAllString(text, "affect$1")
-	text = reFixTraffic.ReplaceAllString(text, "traffic")
-	text = reFixOften.ReplaceAllString(text, "often")
-	text = reFixSuffer.ReplaceAllString(text, "suffer$1")
-	text = reFixOffer.ReplaceAllString(text, "offer$1")
-	text = reFixTransformer.ReplaceAllString(text, "transformer$1")
-	text = reFixFlight.ReplaceAllString(text, "flight$1")
-	text = reFixFlexible.ReplaceAllString(text, "flexible")
-	text = reFixFlexibility.ReplaceAllString(text, "flexibility")
-	text = reFixFluctuate.ReplaceAllString(text, "fluctuat$1")
-
+	for _, rule := range lexicalRepairRules {
+		text = rule.pattern.ReplaceAllString(text, rule.replacement)
+	}
 	return text
 }
 

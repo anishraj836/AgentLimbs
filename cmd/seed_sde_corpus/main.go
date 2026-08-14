@@ -199,26 +199,22 @@ func main() {
 	totalIngested := 0
 	startTime := time.Now()
 
-	// Ingest 1,000 distinct SDE documentation topics (10 domains x 100 generated variations per domain)
+	// Ingest 1,000 distinct SDE documentation topics (10 domains x 20-40 topics x 5 variations)
 	for dIdx, domain := range domains {
 		fmt.Printf("📦 Ingesting Domain [%d/10]: %s...\n", dIdx+1, domain.Category)
 
 		for _, topic := range domain.Topics {
-			// Generate 5 sub-topic variations per topic to reach 1,000+ total unique URLs
 			for v := 1; v <= 5; v++ {
 				totalIngested++
 				url := fmt.Sprintf("https://sde-knowledge.org/%s/%s/v%d", slugify(domain.Category), slugify(topic), v)
-				title := fmt.Sprintf("%s - %s Guide (Part %d)", domain.Category, topic, v)
-				cleanBody := fmt.Sprintf(domain.Template, topic) +
-					fmt.Sprintf(" Detailed technical analysis for %s. Key concepts include performance benchmarking, production trade-offs, architecture patterns, and software development engineering best practices.", topic)
-
+				title, cleanBody := generateArticleMarkdown(domain.Category, topic, v)
 				totalTokens := len(strings.Fields(cleanBody))
 
 				// 1. Save to shared Database / Storage
 				_ = storage.SaveCrawledDocument(ctx, url, title, cleanBody, totalTokens, "sde_corpus", url)
 
 				// 2. Index into Inverted Index & Autocomplete Trie & Vector Store
-				index.GlobalEngine.IndexDocumentVector(url, title, cleanBody)
+				index.GlobalEngine.IndexDocumentDirectly(url, title, cleanBody, totalTokens)
 			}
 		}
 	}
@@ -259,6 +255,73 @@ func main() {
 		for i, hit := range fused {
 			fmt.Printf("    [%d] Title: %s\n        URL: %s (RRF Score: %.6f)\n", i+1, hit.Title, hit.URL, hit.RRFScore)
 		}
+	}
+}
+
+var variationSubtitles = map[int]string{
+	1: "Foundational Architecture and Internal Mechanics",
+	2: "Production Implementation and State Management",
+	3: "Performance Benchmarking and Scale Optimization",
+	4: "Fault Tolerance, Reliability, and Resiliency",
+	5: "Advanced Distributed Patterns and Case Studies",
+}
+
+func generateArticleMarkdown(category, topic string, variation int) (string, string) {
+	subtitle := variationSubtitles[variation]
+	if subtitle == "" {
+		subtitle = fmt.Sprintf("Deep Dive Technical Guide (Part %d)", variation)
+	}
+
+	title := fmt.Sprintf("%s: %s — %s", category, topic, subtitle)
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s\n\n", title))
+	sb.WriteString("## Architectural Overview\n\n")
+	sb.WriteString(fmt.Sprintf("In high-throughput systems engineering, `%s` represents a critical building block within the `%s` domain. ", topic, category))
+	sb.WriteString(fmt.Sprintf("When designing scalable distributed topologies or core systems software, `%s` provides concrete structural guarantees around latency budgets, concurrency hazards, and resource boundaries.\n\n", topic))
+
+	sb.WriteString("## Core Components & Structural Invariants\n\n")
+	sb.WriteString(fmt.Sprintf("Implementing `%s` requires rigorous attention to memory alignment, lock contention, cache-line bouncing, and error boundary isolation. ", topic))
+	sb.WriteString("Key architectural dimensions include:\n\n")
+	sb.WriteString("- **State Synchronization**: Preventing data races and memory corruption across concurrent execution contexts.\n")
+	sb.WriteString("- **Data Locality & Cache Efficiency**: Structuring memory layout to minimize L1/L2 cache misses and page faults.\n")
+	sb.WriteString("- **Graceful Degradation**: Enforcing bounded backpressure and adaptive load shedding under saturated traffic conditions.\n\n")
+
+	sb.WriteString("## Reference Implementation & Code Example\n\n")
+	sb.WriteString(getCodeSnippetForCategory(category, topic))
+	sb.WriteString("\n\n")
+
+	sb.WriteString("## Operational Trade-Offs & Complexity Analysis\n\n")
+	sb.WriteString(fmt.Sprintf("Production deployment of `%s` involves evaluating time and space complexity against system-level operational overhead:\n\n", topic))
+	sb.WriteString("- **Time Complexity**: Optimal amortized bounds ensure predictable tail latency (p99/p99.9).\n")
+	sb.WriteString("- **Space Overhead**: Auxiliary heap allocations are controlled through pre-allocated buffers and object pooling.\n")
+	sb.WriteString("- **Observability**: Metrics emission (counters, gauges, histograms) and structured tracing enable proactive telemetry monitoring.\n")
+
+	return title, sb.String()
+}
+
+func getCodeSnippetForCategory(category, topic string) string {
+	switch category {
+	case "Data Structures & Algorithms":
+		return fmt.Sprintf("```go\n// %s: In-memory structural primitive\ntype StateNode struct {\n\tKey      string\n\tValue    interface{}\n\tChildren []*StateNode\n\tCost     float64\n}\n\nfunc (n *StateNode) Search(target string) (*StateNode, bool) {\n\tif n == nil {\n\t\treturn nil, false\n\t}\n\tif n.Key == target {\n\t\treturn n, true\n\t}\n\tfor _, child := range n.Children {\n\t\tif res, found := child.Search(target); found {\n\t\t\treturn res, true\n\t\t}\n\t}\n\treturn nil, false\n}\n```", topic)
+	case "System Design & Distributed Systems":
+		return fmt.Sprintf("```go\n// %s: Cluster coordination handler\ntype ClusterManager struct {\n\tmu       sync.RWMutex\n\tnodes    map[string]*NodeState\n\tringHash uint32\n}\n\nfunc (cm *ClusterManager) RoutePayload(ctx context.Context, payload []byte) (string, error) {\n\tcm.mu.RLock()\n\tdefer cm.mu.RUnlock()\n\tif len(cm.nodes) == 0 {\n\t\treturn \"\", errors.New(\"no active replicas available in partition\")\n\t}\n\t// Consistent hashing partition lookup\n\treturn cm.selectTargetNode(payload), nil\n}\n```", topic)
+	case "Databases & Storage Engines":
+		return fmt.Sprintf("```sql\n-- %s: Storage schema and indexing strategy\nCREATE TABLE storage_partitions (\n    partition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n    resource_key TEXT NOT NULL,\n    payload_body JSONB NOT NULL,\n    version_seq BIGINT NOT NULL DEFAULT 1,\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n);\n\nCREATE INDEX idx_storage_partitions_key ON storage_partitions (resource_key);\nCREATE INDEX idx_storage_partitions_payload ON storage_partitions USING gin (payload_body);\n```", topic)
+	case "Operating Systems & Low-Level Engineering":
+		return fmt.Sprintf("```go\n// %s: Low-level syscall and memory descriptor\ntype FileDescriptor struct {\n\tfd     int\n\tevents uint32\n\tbuffer []byte\n}\n\nfunc (d *FileDescriptor) PollEvents(timeout time.Duration) (int, error) {\n\tif d.fd < 0 {\n\t\treturn 0, syscall.EBADF\n\t}\n\t// epoll / kqueue non-blocking event multiplexing\n\treturn syscall.Read(d.fd, d.buffer)\n}\n```", topic)
+	case "Networking & Distributed Protocols":
+		return fmt.Sprintf("```go\n// %s: Network frame decoder and header parsing\ntype WireHeader struct {\n\tMagicByte  uint8\n\tOpCode     uint8\n\tPayloadLen uint32\n\tStreamID   uint64\n}\n\nfunc ParseWireHeader(r io.Reader) (*WireHeader, error) {\n\tvar hdr WireHeader\n\terr := binary.Read(r, binary.BigEndian, &hdr)\n\treturn &hdr, err\n}\n```", topic)
+	case "Go Engineering & Concurrency Systems":
+		return fmt.Sprintf("```go\n// %s: Concurrent worker queue with graceful drain\ntype WorkerPool struct {\n\tqueue   chan Job\n\tworkers int\n\twg      sync.WaitGroup\n}\n\nfunc (wp *WorkerPool) Dispatch(ctx context.Context, job Job) error {\n\tselect {\n\tcase <-ctx.Done():\n\t\treturn ctx.Err()\n\tcase wp.queue <- job:\n\t\treturn nil\n\t}\n}\n```", topic)
+	case "Cloud Infrastructure, Kubernetes & DevOps":
+		return fmt.Sprintf("```yaml\n# %s: Production Deployment & Resource Quotas\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: sde-infrastructure-service\n  labels:\n    app: sde-engine\nspec:\n  replicas: 3\n  template:\n    spec:\n      containers:\n      - name: core-app\n        image: sde-service:v2.1.0\n        resources:\n          limits:\n            cpu: \"2000m\"\n            memory: \"2Gi\"\n          requests:\n            cpu: \"500m\"\n            memory: \"512Mi\"\n```", topic)
+	case "Object-Oriented Design & System Patterns":
+		return fmt.Sprintf("```go\n// %s: Interface abstraction & Dependency Inversion\ntype PersistenceRepository interface {\n\tGetByID(ctx context.Context, id string) (*DomainEntity, error)\n\tStore(ctx context.Context, entity *DomainEntity) error\n}\n\ntype ServiceHandler struct {\n\trepo PersistenceRepository\n}\n\nfunc NewServiceHandler(repo PersistenceRepository) *ServiceHandler {\n\treturn &ServiceHandler{repo: repo}\n}\n```", topic)
+	case "Security, Authentication & Cryptography":
+		return fmt.Sprintf("```go\n// %s: Authentication middleware & claims evaluation\ntype Claims struct {\n\tSubject   string   `json:\"sub\"`\n\tAudience  string   `json:\"aud\"`\n\tRoles     []string `json:\"roles\"`\n\tExpiresAt int64    `json:\"exp\"`\n}\n\nfunc (c *Claims) HasRole(targetRole string) bool {\n\tfor _, r := range c.Roles {\n\t\tif r == targetRole {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false\n}\n```", topic)
+	default:
+		return fmt.Sprintf("```go\n// %s: Vector space retrieval and ranking\ntype PipelineEngine struct {\n\tDimensions int\n\tThreshold  float64\n}\n\nfunc (pe *PipelineEngine) ComputeRank(queryVec, docVec []float64) float64 {\n\t// Cosine similarity computation\n\tvar dot, normA, normB float64\n\tfor i := 0; i < len(queryVec); i++ {\n\t\tdot += queryVec[i] * docVec[i]\n\t\tnormA += queryVec[i] * queryVec[i]\n\t\tnormB += docVec[i] * docVec[i]\n\t}\n\tif normA == 0 || normB == 0 {\n\t\treturn 0.0\n\t}\n\treturn dot / (math.Sqrt(normA) * math.Sqrt(normB))\n}\n```", topic)
 	}
 }
 

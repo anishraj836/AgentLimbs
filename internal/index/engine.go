@@ -194,11 +194,31 @@ func (idx *InvertedIndex) SaveSnapshot(filePath string) error {
 		TotalDocLength: totalDocLength,
 		TotalDocuments: totalDocuments,
 	}
-	data, err := json.Marshal(snap)
+
+	tmpPath := filePath + ".tmp"
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filePath, data, 0644)
+	defer func() {
+		if tmpFile != nil {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := json.NewEncoder(tmpFile).Encode(snap); err != nil {
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	tmpFile = nil
+
+	return os.Rename(tmpPath, filePath)
 }
 
 func (idx *InvertedIndex) LoadSnapshot(filePath string) error {
@@ -507,11 +527,31 @@ func (vi *VectorIndex) SaveSnapshot(filePath string) error {
 		Dimensions: dimensions,
 		Vectors:    vectorsCopy,
 	}
-	data, err := json.Marshal(snap)
+
+	tmpPath := filePath + ".tmp"
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filePath, data, 0644)
+	defer func() {
+		if tmpFile != nil {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := json.NewEncoder(tmpFile).Encode(snap); err != nil {
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	tmpFile = nil
+
+	return os.Rename(tmpPath, filePath)
 }
 
 func (vi *VectorIndex) LoadSnapshot(filePath string) error {

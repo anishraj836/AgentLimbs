@@ -9,8 +9,10 @@ import (
 	"github.com/crawler-monorepo/internal/index"
 )
 
+// RRFConstant is the smoothing constant k used in reciprocal rank calculation: 1.0 / (k + rank).
 const RRFConstant = 60.0
 
+// HybridSearchHit represents a search result combined from lexical and vector indexes.
 type HybridSearchHit struct {
 	DocID       string  `json:"doc_id"`
 	RRFScore    float64 `json:"rrf_score"`
@@ -25,6 +27,7 @@ type HybridSearchHit struct {
 	Snippet     string  `json:"snippet"`
 }
 
+// ReciprocalRankFusion merges and ranks BM25 lexical results and dense vector results into a unified list.
 func ReciprocalRankFusion(
 	query string,
 	bm25Hits []index.SearchHit,
@@ -216,8 +219,7 @@ func ReciprocalRankFusion(
 	return fusedHits
 }
 
-// Cross-Encoder Contextual Score Calculation
-
+// RerankedHit represents a search hit after secondary scoring and position adjustment.
 type RerankedHit struct {
 	DocID        string  `json:"doc_id"`
 	RerankScore  float64 `json:"rerank_score"`
@@ -227,7 +229,7 @@ type RerankedHit struct {
 	Snippet      string  `json:"snippet"`
 }
 
-// ComputeKeywordTitleBoostScore computes exact keyword and title frequency boosts for post-RRF search candidate re-ranking.
+// ComputeKeywordTitleBoostScore calculates boost points for exact query terms appearing in document title and snippet.
 func ComputeKeywordTitleBoostScore(query string, title string, snippet string) float64 {
 	qWords := strings.Fields(strings.ToLower(query))
 	if len(qWords) == 0 {
@@ -261,6 +263,7 @@ func ComputeKeywordTitleBoostScore(query string, title string, snippet string) f
 	return math.Round(score*100) / 100
 }
 
+// RerankCandidates scores candidate hits by combining their RRF rank score with title and snippet keyword boosts.
 func RerankCandidates(query string, candidateHits []HybridSearchHit, topK int) []RerankedHit {
 	if len(candidateHits) == 0 || topK <= 0 {
 		return nil

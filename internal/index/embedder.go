@@ -16,17 +16,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// Embedder generates dense vector embeddings from text.
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float64, error)
 	Dimensions() int
 	ProviderName() string
 }
 
-// 1. Default Subword 128-D Embedder (Zero external API dependencies, microsecond latency)
+// SubwordEmbedder produces feature vectors using subword n-gram hashing.
 type SubwordEmbedder struct {
 	dimensions int
 }
 
+// NewSubwordEmbedder returns a SubwordEmbedder with the given vector dimensions.
 func NewSubwordEmbedder(dimensions int) *SubwordEmbedder {
 	if dimensions <= 0 {
 		dimensions = 128
@@ -46,7 +48,7 @@ func (s *SubwordEmbedder) Embed(ctx context.Context, text string) ([]float64, er
 	return GenerateFeatureVector(text, s.dimensions), nil
 }
 
-// 2. Cohere Embedder (Cohere Embed v3, 1024 dimensions)
+// CohereEmbedder generates embeddings using the Cohere API.
 type CohereEmbedder struct {
 	apiKey     string
 	model      string
@@ -54,6 +56,7 @@ type CohereEmbedder struct {
 	client     *http.Client
 }
 
+// NewCohereEmbedder returns a CohereEmbedder configured with the provided API key.
 func NewCohereEmbedder(apiKey string) *CohereEmbedder {
 	model := os.Getenv("COHERE_MODEL")
 	if model == "" {
@@ -122,7 +125,7 @@ func (c *CohereEmbedder) Embed(ctx context.Context, text string) ([]float64, err
 	return res.Embeddings[0], nil
 }
 
-// 3. OpenAI Embedder (text-embedding-3-small, 1536 dimensions)
+// OpenAIEmbedder generates embeddings using the OpenAI API.
 type OpenAIEmbedder struct {
 	apiKey     string
 	model      string
@@ -130,6 +133,7 @@ type OpenAIEmbedder struct {
 	client     *http.Client
 }
 
+// NewOpenAIEmbedder returns an OpenAIEmbedder configured with the provided API key.
 func NewOpenAIEmbedder(apiKey string) *OpenAIEmbedder {
 	model := os.Getenv("OPENAI_MODEL")
 	if model == "" {
@@ -204,7 +208,7 @@ func (o *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float64, err
 	return res.Data[0].Embedding, nil
 }
 
-// 4. Ollama Embedder (Local nomic-embed-text / bge-small)
+// OllamaEmbedder generates embeddings using a local Ollama service.
 type OllamaEmbedder struct {
 	host       string
 	model      string
@@ -212,6 +216,7 @@ type OllamaEmbedder struct {
 	client     *http.Client
 }
 
+// NewOllamaEmbedder returns an OllamaEmbedder configured via environment variables.
 func NewOllamaEmbedder() *OllamaEmbedder {
 	host := os.Getenv("OLLAMA_HOST")
 	if host == "" {
@@ -288,7 +293,7 @@ func (ol *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float64, er
 	return res.Embedding, nil
 }
 
-// NewEmbedderFromEnv selects and initializes the configured Embedder based on EMBEDDING_PROVIDER
+// NewEmbedderFromEnv initializes an Embedder based on the EMBEDDING_PROVIDER environment variable.
 func NewEmbedderFromEnv() Embedder {
 	provider := strings.ToLower(os.Getenv("EMBEDDING_PROVIDER"))
 	switch provider {
@@ -311,6 +316,5 @@ func NewEmbedderFromEnv() Embedder {
 		return NewOllamaEmbedder()
 	}
 
-	// Default fallback: 128-D Subword Feature Encoder
 	return NewSubwordEmbedder(128)
 }
