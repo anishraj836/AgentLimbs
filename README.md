@@ -507,6 +507,20 @@ go test -v ./...
 
 ---
 
+## 🔍 Architectural Scope, Design Philosophy & Limitations
+
+AgentLimbs is designed around the **Unix Philosophy for AI Agents**: *Provide a single-binary, deterministic, sub-100ms sensory limb for agents without coupling them to heavy external runtimes.*
+
+### 1. High-Speed PDF Text Extraction vs. Image OCR
+- **Native Text Layer**: AgentLimbs decodes PostScript text streams, Type 1 font difference encodings, kerning displacements, and decomposed ligatures natively in Go in **<100ms**.
+- **Embedded Raster Figures (Documented Limitation)**: Text baked inside embedded bitmap graphics (e.g. flowchart box labels in architecture diagrams or rasterized charts) is intentionally not parsed via traditional OCR in the fast path.
+- **Why No Heavy OCR / Vision Ingestion?**:
+  1. **Latency & Cost**: Calling multimodal vision models on 15 figures per paper adds 5–10 seconds of latency and external API token costs to every scrape.
+  2. **Zero CGo / Runtime Bloat**: Traditional OCR (Tesseract) requires heavy system C-libraries, breaking the single-binary zero-dependency deployment model.
+  3. **Agentic Separation of Concerns**: Consuming agents (such as Claude, GPT-4, or Gemini) already possess world-class vision capabilities. AgentLimbs keeps the ingestion layer blazing fast and lightweight, leaving multimodal image reasoning to the calling agent on demand.
+
+---
+
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for details.
