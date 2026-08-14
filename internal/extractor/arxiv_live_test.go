@@ -21,44 +21,45 @@ func TestLiveArxivPaperExtraction(t *testing.T) {
 		t.Fatalf("Failed to read body: %v", err)
 	}
 
-	streams := extractPDFStreams(body)
-	t.Logf("TOTAL STREAMS: %d", len(streams))
-	for idx, s := range streams {
-		decomp := decompressPDFStream(s.dict, s.data)
-		extracted := extractTextFromBTBlocks(decomp)
-		joined := strings.Join(extracted, "\n")
-		if strings.Contains(joined, "3.2.3") || strings.Contains(joined, "encoder-decoder attention") {
-			t.Logf("STREAM %d CONTAINS 3.2.3 (dict: %s):\nRAW EXTRACTED:\n%s\n", idx, s.dict, joined)
-		}
-	}
-
 	text, title, err := ExtractTextFromPDF(body)
 	if err != nil {
 		t.Fatalf("ExtractTextFromPDF failed: %v", err)
 	}
 
-	pos323 := strings.Index(text, "3.2.3")
-	if pos323 != -1 {
-		end := pos323 + 600
-		if end > len(text) {
-			end = len(text)
-		}
-		lines := strings.Split(text[pos323:end], "\n")
-		for idx, l := range lines {
-			t.Logf("LINE %d: %q (len=%d, runes=%v)", idx, l, len(l), []rune(l))
-		}
-	}
-	// Check if title is Attention Is All You Need
+	// 1. Check title
 	if title != "Attention Is All You Need" {
 		t.Errorf("Expected title 'Attention Is All You Need', got %q", title)
 	}
 
-	// Check for "first" vs "rst"
+	// 2. Check for "first" vs "rst"
 	if strings.Contains(text, " rst ") || strings.Contains(text, "The rst ") || strings.Contains(text, "the rst ") {
 		t.Errorf("Found 'rst' in extracted text: %s", findSnippets(text, "rst"))
 	}
 
-	// Check Section 3.2.3 bullets
+	// 3. Check for "beneficial" vs "benecial"
+	if strings.Contains(text, "benecial") {
+		t.Errorf("Found un-repaired 'benecial' in extracted text: %s", findSnippets(text, "benecial"))
+	}
+	if !strings.Contains(text, "beneficial") {
+		t.Errorf("Expected 'beneficial' in extracted text")
+	}
+
+	// 4. Check page range separators (en-dash)
+	if !strings.Contains(text, "770–778") {
+		t.Errorf("Expected en-dash in 770–778, snippet: %s", findSnippets(text, "770"))
+	}
+	if !strings.Contains(text, "1735–1780") {
+		t.Errorf("Expected en-dash in 1735–1780, snippet: %s", findSnippets(text, "1735"))
+	}
+	if !strings.Contains(text, "832–841") {
+		t.Errorf("Expected en-dash in 832–841, snippet: %s", findSnippets(text, "832"))
+	}
+	if !strings.Contains(text, "152–159") {
+		t.Errorf("Expected en-dash in 152–159, snippet: %s", findSnippets(text, "152"))
+	}
+	if !strings.Contains(text, "433–440") {
+		t.Errorf("Expected en-dash in 433–440, snippet: %s", findSnippets(text, "433"))
+	}
 	if !strings.Contains(text, "- In \"encoder-decoder attention\"") {
 		t.Errorf("Expected bullet '- In \"encoder-decoder attention\"' in Section 3.2.3, text snippet:\n%s", findSnippets(text, "encoder-decoder attention"))
 	}
@@ -69,7 +70,7 @@ func TestLiveArxivPaperExtraction(t *testing.T) {
 		t.Errorf("Expected bullet '- Similarly, self-attention' in Section 3.2.3, text snippet:\n%s", findSnippets(text, "Similarly, self-attention"))
 	}
 
-	// Check information flow
+	// 6. Check information flow
 	if !strings.Contains(text, "information flow") {
 		t.Errorf("Expected 'information flow' to be repaired, text snippet:\n%s", findSnippets(text, "information"))
 	}

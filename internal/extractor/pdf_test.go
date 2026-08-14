@@ -271,11 +271,16 @@ func TestPDFLigatureDecomposition(t *testing.T) {
 	if !strings.Contains(nalTest, "finally") {
 		t.Errorf("Expected 'finally' to be preserved, got %q", nalTest)
 	}
+
+	beneficialTest := cleanExtractedPDFText("it was found to be benecial in the eld.")
+	if !strings.Contains(beneficialTest, "beneficial") {
+		t.Errorf("Expected 'beneficial' to be restored, got %q", beneficialTest)
+	}
 }
 
 func TestPDFEnDashAndBullets(t *testing.T) {
-	// Test En-Dash between numbers
-	enDashRaw := "Pages 770\x1f778 and 1735\x1e1780"
+	// Test En-Dash between numbers (TeX T1 control bytes and Type 1 0x96 encoding)
+	enDashRaw := "Pages 770\x1f778 and 1735\x1e1780 and 832\x96841"
 	enDashClean := cleanExtractedPDFText(enDashRaw)
 	if !strings.Contains(enDashClean, "770–778") {
 		t.Errorf("Expected en-dash between numbers, got %q", enDashClean)
@@ -283,9 +288,12 @@ func TestPDFEnDashAndBullets(t *testing.T) {
 	if !strings.Contains(enDashClean, "1735–1780") {
 		t.Errorf("Expected en-dash between numbers, got %q", enDashClean)
 	}
+	if !strings.Contains(enDashClean, "832–841") {
+		t.Errorf("Expected en-dash between numbers, got %q", enDashClean)
+	}
 
 	// Test Bullets
-	bulletRaw := "\x1f First item\n\x1e Second item"
+	bulletRaw := "•\nFirst item\n•\nSecond item"
 	bulletClean := cleanExtractedPDFText(bulletRaw)
 	if !strings.Contains(bulletClean, "- First item") {
 		t.Errorf("Expected bullet replaced with '- ', got %q", bulletClean)

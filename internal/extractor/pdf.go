@@ -784,13 +784,39 @@ func parsePDFLiteralString(s string) string {
 						}
 					}
 					val, _ := strconv.ParseInt(oct, 8, 32)
-					runes = append(runes, rune(val))
+					switch val {
+					case 0x96: // en-dash
+						runes = append(runes, '–')
+					case 0x97: // em-dash
+						runes = append(runes, '—')
+					case 0x95: // bullet
+						runes = append(runes, '•')
+					case 0x91, 0x92: // quotes
+						runes = append(runes, '\'')
+					case 0x93, 0x94: // double quotes
+						runes = append(runes, '"')
+					default:
+						runes = append(runes, rune(val))
+					}
 				} else {
 					runes = append(runes, rawRunes[i])
 				}
 			}
 		} else {
-			runes = append(runes, rawRunes[i])
+			switch rawRunes[i] {
+			case 0x96:
+				runes = append(runes, '–')
+			case 0x97:
+				runes = append(runes, '—')
+			case 0x95:
+				runes = append(runes, '•')
+			case 0x91, 0x92:
+				runes = append(runes, '\'')
+			case 0x93, 0x94:
+				runes = append(runes, '"')
+			default:
+				runes = append(runes, rawRunes[i])
+			}
 		}
 	}
 
@@ -839,7 +865,7 @@ func parsePDFHexString(s string) string {
 }
 
 var (
-	reEnDashDigits           = regexp.MustCompile(`(\d)[\x00-\x1f\x7f](\d)`)
+	reEnDashDigits           = regexp.MustCompile(`(\d)[\x00-\x1f\x7f-\x9f](\d)`)
 	reIsolatedBulletSymbol   = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]*$`)
 	reLeadingBullet          = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]+`)
 	reHyphenUnicode          = regexp.MustCompile(`(?m)(\p{L}+)-\s*\n\s*(\p{L}+)`)
@@ -851,6 +877,8 @@ var (
 	reFixFirst         = regexp.MustCompile(`(?i)\brst\b`)
 	reFixFlowWord      = regexp.MustCompile(`(?i)\b(information|work|data|signal|cash|air|blood|traffic|control|optical)\s+ow\b`)
 	reFixFinalWord     = regexp.MustCompile(`(?i)\b(the|a|its|their|in the|resulting in the)\s+nal\b`)
+	reFixBeneficial    = regexp.MustCompile(`(?i)\bbeneci(al|ally|aries|ary)\b`)
+	reFixBenefit       = regexp.MustCompile(`(?i)\bbenet(s|ed|ing)?\b`)
 	reFixEfficiency    = regexp.MustCompile(`(?i)\befcien(t|tly|cy|cies)\b`)
 	reFixSignificant   = regexp.MustCompile(`(?i)\bsignican(t|tly|ce)\b`)
 	reFixDifficult     = regexp.MustCompile(`(?i)\bdifcul(t|ty|ties|tly)\b`)
@@ -898,13 +926,26 @@ var (
 )
 
 func decomposeLigatures(s string) string {
-	// 1. Convert control bytes between digits (e.g. 770\x1f778) to en-dash (770–778) FIRST before ligature replacement
+	// 1. Convert Type 1 / Latin-1 font encoding bytes (0x96 en-dash, 0x97 em-dash, 0x95 bullet) to valid UTF-8
+	rFont := strings.NewReplacer(
+		"\u0096", "–",
+		"\u0097", "—",
+		"\u0095", "•",
+		"\x96", "–",
+		"\x97", "—",
+		"\x95", "•",
+		"\x91", "'",
+		"\x92", "'",
+	)
+	s = rFont.Replace(s)
+
+	// 2. Convert control bytes between digits (e.g. 770\x1f778) to en-dash (770–778)
 	s = reEnDashDigits.ReplaceAllString(s, "${1}–${2}")
 
-	// 2. Convert standalone bullet control bytes to "•" so they are not stripped by unicode.IsPrint
+	// 3. Convert standalone bullet control bytes to "•" so they are not stripped by unicode.IsPrint
 	s = reIsolatedBulletSymbol.ReplaceAllString(s, "•")
 
-	// 3. Convert leading control bytes on lines to markdown list bullets
+	// 4. Convert leading control bytes on lines to markdown list bullets
 	s = reLeadingBullet.ReplaceAllString(s, "- ")
 
 	// 3. Unambiguous Unicode presentation ligatures & explicit TeX ligatures
@@ -944,6 +985,8 @@ func repairCommonMissingLigatures(text string) string {
 	text = reFixFirst.ReplaceAllString(text, "first")
 	text = reFixFlowWord.ReplaceAllString(text, "$1 flow")
 	text = reFixFinalWord.ReplaceAllString(text, "$1 final")
+	text = reFixBeneficial.ReplaceAllString(text, "benefici$1")
+	text = reFixBenefit.ReplaceAllString(text, "benefit$1")
 	text = reFixEfficiency.ReplaceAllString(text, "efficien$1")
 	text = reFixSignificant.ReplaceAllString(text, "significan$1")
 	text = reFixDifficult.ReplaceAllString(text, "difficul$1")
