@@ -53,7 +53,18 @@ func main() {
 				break
 			}
 			logger.Log.Error("MCP Stdio Decode error: " + err.Error())
-			break
+			errResp := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      nil,
+				"error": map[string]interface{}{
+					"code":    -32700,
+					"message": "Parse error: " + err.Error(),
+				},
+			}
+			if respBytes, marshalErr := json.Marshal(errResp); marshalErr == nil {
+				fmt.Println(string(respBytes))
+			}
+			continue
 		}
 
 		if len(rawMessage) == 0 {

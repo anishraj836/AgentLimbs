@@ -6,20 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/index"
 )
 
 type AgenticSearchRequest struct {
-	Query     string `json:"query"`
-	Model     string `json:"model,omitempty"`
-	LLMApiKey string `json:"llm_api_key,omitempty"`
+	Query      string `json:"query"`
+	Model      string `json:"model,omitempty"`
+	LLMApiKey  string `json:"llm_api_key,omitempty"`
 	LLMBaseURL string `json:"llm_base_url,omitempty"`
-	TopK      int    `json:"top_k,omitempty"`
+	TopK       int    `json:"top_k,omitempty"`
 }
 
 type AgenticStep struct {
@@ -30,29 +33,74 @@ type AgenticStep struct {
 }
 
 type AgenticSearchResponse struct {
-	Query        string            `json:"query"`
-	SynthesizedAnswer string       `json:"synthesized_answer"`
-	ModelUsed    string            `json:"model_used"`
-	LatencyMs    float64           `json:"latency_ms"`
-	Steps        []AgenticStep     `json:"steps"`
-	Citations    []HybridSearchHit `json:"citations"`
+	Query             string            `json:"query"`
+	SynthesizedAnswer string            `json:"synthesized_answer"`
+	ModelUsed         string            `json:"model_used"`
+	LatencyMs         float64           `json:"latency_ms"`
+	Steps             []AgenticStep     `json:"steps"`
+	Citations         []HybridSearchHit `json:"citations"`
 }
 
 type AgenticPipeline struct {
-	metasearch *MetasearchAdapter
-	engine     *index.Engine
-	httpClient *http.Client
+	metasearch              *MetasearchAdapter
+	engine                  *index.Engine
+	httpClient              *http.Client
+	allowLoopbackForTesting bool
 }
 
 func NewAgenticPipeline(engine *index.Engine) *AgenticPipeline {
+	return NewTestAgenticPipeline(engine, false)
+}
+
+func NewTestAgenticPipeline(engine *index.Engine, allowLoopback bool) *AgenticPipeline {
 	if engine == nil {
 		engine = index.GlobalEngine
 	}
 	return &AgenticPipeline{
-		metasearch: NewMetasearchAdapter(engine),
-		engine:     engine,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		metasearch:              NewMetasearchAdapter(engine),
+		engine:                  engine,
+		httpClient:              &http.Client{Timeout: 30 * time.Second},
+		allowLoopbackForTesting: allowLoopback,
 	}
+}
+
+func validateLLMBaseURL(rawURL string) error {
+	return validateLLMBaseURLWithLoopback(rawURL, false)
+}
+
+func validateLLMBaseURLWithLoopback(rawURL string, allowLoopback bool) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("malformed URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme: %s (must be http or https)", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("empty hostname in base URL")
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if !allowLoopback && crawler.IsPrivateIP(ip) {
+			return fmt.Errorf("blocked LLM base URL with private/internal IP: %s", host)
+		}
+		return nil
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve LLM base URL host %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("no IP addresses found for LLM base URL host %s", host)
+	}
+	for _, ip := range ips {
+		if !allowLoopback && crawler.IsPrivateIP(ip) {
+			return fmt.Errorf("blocked LLM base URL resolving to private/internal IP: %s (%s)", host, ip.String())
+		}
+	}
+	return nil
 }
 
 func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest) (*AgenticSearchResponse, error) {
@@ -86,6 +134,10 @@ func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest)
 		}
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
+
+	if err := validateLLMBaseURLWithLoopback(baseURL, p.allowLoopbackForTesting); err != nil {
+		return nil, fmt.Errorf("invalid LLM base URL: %w", err)
+	}
 
 	model := req.Model
 	if model == "" {
@@ -173,6 +225,10 @@ func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest)
 }
 
 func (p *AgenticPipeline) callDeepSeek(ctx context.Context, baseURL, apiKey, model, query string, hits []HybridSearchHit) (string, error) {
+	if err := validateLLMBaseURLWithLoopback(baseURL, p.allowLoopbackForTesting); err != nil {
+		return "", fmt.Errorf("invalid LLM base URL: %w", err)
+	}
+
 	var contextBuf bytes.Buffer
 	for i, h := range hits {
 		contextBuf.WriteString(fmt.Sprintf("[%d] Title: %s\nURL: %s\nSnippet: %s\n\n", i+1, h.Title, h.URL, h.Snippet))
@@ -210,7 +266,10 @@ func (p *AgenticPipeline) callDeepSeek(ctx context.Context, baseURL, apiKey, mod
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024*1024))
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

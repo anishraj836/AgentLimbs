@@ -265,3 +265,21 @@ func TestEmpiricalSemanticSimilarityAndScanScaling(t *testing.T) {
 		t.Logf("Flat O(N) scan latency for N=%d vectors: %v/query", size, avgDuration)
 	}
 }
+
+func TestVectorIndex_DeleteVector(t *testing.T) {
+	vi := NewVectorIndex(3)
+	vec := []float64{1.0, 0.0, 0.0}
+	_ = vi.AddVector("doc1", vec)
+
+	res := vi.SearchNearest(vec, 5)
+	if len(res) == 0 || res[0].DocID != "doc1" {
+		t.Fatalf("Expected doc1 in nearest results before deletion")
+	}
+
+	vi.DeleteVector("doc1")
+
+	resAfter := vi.SearchNearest(vec, 5)
+	if len(resAfter) != 0 {
+		t.Errorf("Expected 0 results after deleting doc1, got %d", len(resAfter))
+	}
+}

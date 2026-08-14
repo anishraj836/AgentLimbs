@@ -132,3 +132,19 @@ func TestMCPHybridSearchNegativeLimit(t *testing.T) {
 		t.Fatalf("Expected error text '%s', got '%v'", expectedText, resp.Result.Content)
 	}
 }
+
+func TestMCPProtocol_ParseError(t *testing.T) {
+	invalidJSON := `{"jsonrpc": "2.0", "method": `
+	respBytes, err := HandleRPCMessage([]byte(invalidJSON), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		t.Fatalf("failed to unmarshal parse error response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != -32700 {
+		t.Fatalf("expected error code -32700, got: %v", resp.Error)
+	}
+}

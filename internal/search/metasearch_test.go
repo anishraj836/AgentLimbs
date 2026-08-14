@@ -179,3 +179,55 @@ func TestMetasearchAdapter_DeadlineTimeout(t *testing.T) {
 		t.Errorf("Expected 0 hits when DDG query times out, got %d", len(hits))
 	}
 }
+
+func TestMetasearchAdapter_SingleflightContextIsolation(t *testing.T) {
+	mockDDGServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`
+<html><body>
+<div class="result">
+  <a class="result__a" href="https://example.com/isolated">Isolated Singleflight Target</a>
+  <a class="result__snippet">Snippet for isolated singleflight test.</a>
+</div>
+</body></html>`))
+	}))
+	defer mockDDGServer.Close()
+
+	eng := index.NewIndexEngine()
+	adapter := NewMetasearchAdapter(eng).
+		WithBaseURL(mockDDGServer.URL).
+		WithHTTPClient(mockDDGServer.Client()).
+		WithTimeout(2 * time.Second)
+
+	// Caller 1 has a very short context (10ms) that will cancel quickly
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel1()
+
+	// Caller 2 has a long context (2s) that should complete successfully
+	ctx2 := context.Background()
+
+	var wg sync.WaitGroup
+	var hits2 []HybridSearchHit
+	var err2 error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = adapter.Search(ctx1, "isolated query", 5)
+	}()
+
+	go func() {
+		defer wg.Done()
+		// Slight offset to ensure caller 1 starts the singleflight Do function first
+		time.Sleep(5 * time.Millisecond)
+		hits2, err2 = adapter.Search(ctx2, "isolated query", 5)
+	}()
+
+	wg.Wait()
+
+	if err2 != nil {
+		t.Fatalf("Caller 2 failed due to singleflight context binding: %v", err2)
+	}
+	_ = hits2
+}

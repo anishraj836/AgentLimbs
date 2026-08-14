@@ -121,3 +121,20 @@ func TestExtractFields(t *testing.T) {
 		t.Errorf("Expected Revenue field extraction, got '%s'", extracted["Revenue"])
 	}
 }
+
+func TestCountBPETokens_SpecialTokens(t *testing.T) {
+	specialTexts := []string{
+		"Hello <|endoftext|> world",
+		"<|im_start|>system\nYou are an AI assistant.<|im_end|>",
+		"Code with <|fim_prefix|> prefix <|fim_suffix|> suffix <|fim_middle|> middle",
+		"",
+	}
+
+	for _, text := range specialTexts {
+		// Should count tokens without panicking
+		tokens := CountBPETokens(text)
+		if text != "" && tokens <= 0 {
+			t.Errorf("Expected positive token count for %q, got %d", text, tokens)
+		}
+	}
+}

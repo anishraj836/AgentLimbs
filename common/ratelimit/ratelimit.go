@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -79,7 +80,12 @@ func RateLimiterMiddleware(rate float64, capacity float64) func(http.Handler) ht
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientKey := r.Header.Get("X-API-Key")
 			if clientKey == "" {
-				clientKey = r.RemoteAddr
+				host, _, err := net.SplitHostPort(r.RemoteAddr)
+				if err == nil && host != "" {
+					clientKey = host
+				} else {
+					clientKey = r.RemoteAddr
+				}
 			}
 
 			if !limiter.Allow(clientKey) {

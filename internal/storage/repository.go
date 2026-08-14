@@ -129,16 +129,13 @@ func SaveCrawledDocumentWithTTL(ctx context.Context, url, title, cleanBody strin
 		ON CONFLICT (url) DO UPDATE
 		SET title = EXCLUDED.title, clean_body = EXCLUDED.clean_body, total_tokens = EXCLUDED.total_tokens, source_type = EXCLUDED.source_type, source_url = EXCLUDED.source_url, expires_at = EXCLUDED.expires_at;`
 		_, pgErr = Pool.Exec(ctx, query, url, title, cleanBody, totalTokens, sourceType, sourceURL, expiresAt)
-		if pgErr != nil {
-			log.Printf("[Storage] PostgreSQL write error: %v; updating file fallback", pgErr)
+		if pgErr == nil {
+			return nil
 		}
+		log.Printf("[Storage] PostgreSQL write error: %v; updating file fallback", pgErr)
 	}
 
-	fileErr := saveToFileFallback(url, title, cleanBody, totalTokens, sourceType, sourceURL, expiresAt)
-	if Pool != nil && pgErr == nil {
-		return nil
-	}
-	return fileErr
+	return saveToFileFallback(url, title, cleanBody, totalTokens, sourceType, sourceURL, expiresAt)
 }
 
 func GetCrawledDocuments(ctx context.Context) ([]CrawledDocument, error) {

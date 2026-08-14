@@ -72,7 +72,19 @@ type CallToolResult struct {
 	IsError bool          `json:"isError,omitempty"`
 }
 
-func HandleRPCMessage(raw []byte, client *crawler.Client) ([]byte, error) {
+func HandleRPCMessage(raw []byte, client *crawler.Client) (respBytes []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			errResp := JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      nil,
+				Error:   &RPCError{Code: -32603, Message: fmt.Sprintf("Internal error: %v", r)},
+			}
+			respBytes, _ = json.Marshal(errResp)
+			err = nil
+		}
+	}()
+
 	var req JSONRPCRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		errResp := JSONRPCResponse{

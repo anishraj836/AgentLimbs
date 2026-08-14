@@ -477,6 +477,12 @@ func (vi *VectorIndex) AddVector(docID string, vec []float64) error {
 	return nil
 }
 
+func (vi *VectorIndex) DeleteVector(docID string) {
+	vi.mu.Lock()
+	defer vi.mu.Unlock()
+	delete(vi.vectors, docID)
+}
+
 func (vi *VectorIndex) SearchNearest(queryVector []float64, topK int) []VectorSearchResult {
 	vi.mu.RLock()
 	defer vi.mu.RUnlock()
@@ -655,28 +661,33 @@ func RankDocuments(
 		return nil
 	}
 
-	totalDocs, avgDocLen, _ := invIndex.GetStats()
+	invIndex.mu.RLock()
+	totalDocs := invIndex.totalDocuments
+	totalDocLength := invIndex.totalDocLength
 	if totalDocs == 0 {
+		invIndex.mu.RUnlock()
 		return nil
 	}
+	avgDocLen := float64(totalDocLength) / float64(totalDocs)
 
 	docScores := make(map[string]float64)
 	docMatchCounts := make(map[string]int)
 
 	for _, term := range stemmedTokens {
-		pl, exists := invIndex.GetPostingList(term)
+		pl, exists := invIndex.postings[term]
 		if !exists {
 			continue
 		}
 
 		idf := ComputeIDF(totalDocs, pl.DocumentFrequency)
 		for _, entry := range pl.Entries {
-			docLen := invIndex.GetDocLength(entry.DocID)
+			docLen := invIndex.docLengths[entry.DocID]
 			score := ComputeBM25Score(entry.TermFrequency, docLen, avgDocLen, idf)
 			docScores[entry.DocID] += score
 			docMatchCounts[entry.DocID]++
 		}
 	}
+	invIndex.mu.RUnlock()
 
 	var hits []SearchHit
 	for docID, score := range docScores {

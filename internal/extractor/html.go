@@ -131,15 +131,21 @@ func ExtractTitleFromAST(n *html.Node) string {
 }
 
 // CountBPETokens calculates exact Byte-Pair Encoding subword tokens using tiktoken.
-func CountBPETokens(text string) int {
+func CountBPETokens(text string) (count int) {
 	if text == "" {
 		return 0
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			count = len(strings.Fields(text))
+		}
+	}()
 	tke, err := getGlobalTiktokenCodec()
 	if err != nil {
 		return len(strings.Fields(text))
 	}
-	tokens := tke.Encode(text, nil, nil)
+	allowedSpecial := []string{"<|endoftext|>", "<|im_start|>", "<|im_end|>", "<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>"}
+	tokens := tke.Encode(text, allowedSpecial, nil)
 	return len(tokens)
 }
 

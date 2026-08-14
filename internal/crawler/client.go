@@ -75,6 +75,44 @@ func getIPFromAddr(addr net.Addr) net.IP {
 	}
 }
 
+func isPrivateIPv4(ip4 net.IP) bool {
+	if len(ip4) != 4 {
+		ip4 = ip4.To4()
+		if ip4 == nil {
+			return false
+		}
+	}
+	switch {
+	case ip4[0] == 0: // 0.0.0.0/8
+		return true
+	case ip4[0] == 10: // 10.0.0.0/8
+		return true
+	case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // 100.64.0.0/10 CGNAT
+		return true
+	case ip4[0] == 127: // 127.0.0.0/8 Loopback
+		return true
+	case ip4[0] == 169 && ip4[1] == 254: // 169.254.0.0/16 Link-local / AWS metadata
+		return true
+	case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31: // 172.16.0.0/12
+		return true
+	case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0: // 192.0.0.0/24 IETF Protocol
+		return true
+	case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2: // 192.0.2.0/24 TEST-NET-1
+		return true
+	case ip4[0] == 192 && ip4[1] == 168: // 192.168.0.0/16
+		return true
+	case ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19): // 198.18.0.0/15 Benchmarking
+		return true
+	case ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100: // 198.51.100.0/24 TEST-NET-2
+		return true
+	case ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113: // 203.0.113.0/24 TEST-NET-3
+		return true
+	case ip4[0] >= 224: // 224.0.0.0/4 Multicast, 240.0.0.0/4 Reserved, 255.255.255.255 Broadcast
+		return true
+	}
+	return false
+}
+
 // IsPrivateIP reports whether an IP is loopback, RFC1918 private, link-local, or reserved.
 func IsPrivateIP(ip net.IP) bool {
 	if ip == nil {
@@ -84,31 +122,32 @@ func IsPrivateIP(ip net.IP) bool {
 		return true
 	}
 	if ip4 := ip.To4(); ip4 != nil {
-		switch {
-		case ip4[0] == 0: // 0.0.0.0/8
-			return true
-		case ip4[0] == 10: // 10.0.0.0/8
-			return true
-		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // 100.64.0.0/10 CGNAT
-			return true
-		case ip4[0] == 127: // 127.0.0.0/8 Loopback
-			return true
-		case ip4[0] == 169 && ip4[1] == 254: // 169.254.0.0/16 Link-local / AWS metadata
-			return true
-		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31: // 172.16.0.0/12
-			return true
-		case ip4[0] == 192 && ip4[1] == 168: // 192.168.0.0/16
-			return true
-		case ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2: // TEST-NET-1
-			return true
-		case ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100: // TEST-NET-2
-			return true
-		case ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113: // TEST-NET-3
-			return true
-		case ip4[0] >= 224: // Multicast / Reserved (224.0.0.0/4)
+		return isPrivateIPv4(ip4)
+	}
+	if len(ip) == net.IPv6len {
+		// IPv4-compatible IPv6 (::/96 where first 12 bytes are 0)
+		if ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0 &&
+			ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
+			ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
+			return isPrivateIPv4(ip[12:16])
+		}
+		// NAT64 Well-Known Prefix (64:ff9b::/96)
+		if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+			ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
+			ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
+			return isPrivateIPv4(ip[12:16])
+		}
+		// NAT64 Local-Use Prefix (64:ff9b:1::/48)
+		if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+			ip[4] == 0x00 && ip[5] == 0x01 {
+			if isPrivateIPv4(ip[12:16]) {
+				return true
+			}
+			if isPrivateIPv4(net.IP{ip[7], ip[8], ip[9], ip[10]}) {
+				return true
+			}
 			return true
 		}
-	} else if len(ip) == net.IPv6len {
 		switch {
 		case ip[0] == 0xfc || ip[0] == 0xfd: // fc00::/7 ULA
 			return true
@@ -470,6 +509,9 @@ func NewTestClientWithTransport(tr http.RoundTripper, allowLoopback bool) *Clien
 				if err != nil {
 					return nil, err
 				}
+				if len(ips) == 0 {
+					return nil, fmt.Errorf("no IP addresses found for host %s", host)
+				}
 
 				for _, ip := range ips {
 					if !c.allowLoopbackForTesting && IsPrivateIP(ip) {
@@ -511,8 +553,23 @@ func NewTestClientWithTransport(tr http.RoundTripper, allowLoopback bool) *Clien
 			}
 			if !c.allowLoopbackForTesting {
 				host := req.URL.Hostname()
-				if ip := net.ParseIP(host); ip != nil && IsPrivateIP(ip) {
-					return fmt.Errorf("blocked redirect to private IP host: %s", host)
+				if ip := net.ParseIP(host); ip != nil {
+					if IsPrivateIP(ip) {
+						return fmt.Errorf("blocked redirect to private IP host: %s", host)
+					}
+				} else {
+					ips, err := net.LookupIP(host)
+					if err != nil {
+						return fmt.Errorf("blocked redirect to unresolvable host %s: %w", host, err)
+					}
+					if len(ips) == 0 {
+						return fmt.Errorf("no IP addresses found for redirect host %s", host)
+					}
+					for _, ip := range ips {
+						if IsPrivateIP(ip) {
+							return fmt.Errorf("blocked redirect to private IP host: %s (%s)", host, ip.String())
+						}
+					}
 				}
 			}
 			if len(via) > 0 {
@@ -573,7 +630,10 @@ func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
 		if err != nil {
 			return "", nil
 		}
-		defer resp.Body.Close()
+		defer func() {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024*1024))
+			resp.Body.Close()
+		}()
 
 		if resp.StatusCode != http.StatusOK {
 			return "", nil
@@ -678,8 +738,13 @@ func (c *Client) FetchWithStepping(ctx context.Context, targetURL string) (*Fetc
 		}
 	}
 
-	if !needsStepUp && err == nil && res != nil {
-		return res, nil
+	if !needsStepUp {
+		if err != nil {
+			return nil, err
+		}
+		if res != nil {
+			return res, nil
+		}
 	}
 
 	jitter := time.Duration(50+rand.Intn(100)) * time.Millisecond

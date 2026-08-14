@@ -51,18 +51,83 @@ func TestIsPrivateIP(t *testing.T) {
 		{"172.16.0.5", true},
 		{"192.168.1.1", true},
 		{"169.254.169.254", true},
+		{"0.0.0.0", true},
+		{"0.1.2.3", true},
+		{"100.64.0.1", true},
+		{"100.127.255.255", true},
+		{"100.63.255.255", false},
+		{"100.128.0.1", false},
+		{"255.255.255.255", true},
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
 		{"::1", true},
 		{"fc00::1", true},
+		{"::127.0.0.1", true},
+		{"::192.168.1.1", true},
+		{"64:ff9b::192.168.1.1", true},
+		{"64:ff9b::10.0.0.1", true},
+		{"64:ff9b::8.8.8.8", false},
+		{"64:ff9b:1::192.168.1.1", true},
 	}
 
 	for _, tt := range tests {
 		ip := net.ParseIP(tt.ip)
+		if ip == nil {
+			t.Fatalf("Failed to parse test IP: %s", tt.ip)
+		}
 		got := IsPrivateIP(ip)
 		if got != tt.expected {
 			t.Errorf("IsPrivateIP(%s) = %v; want %v", tt.ip, got, tt.expected)
 		}
+	}
+}
+
+func TestCheckRedirect_SSRFGuard(t *testing.T) {
+	client := NewTestClient(false) // do NOT allow loopback
+
+	req, _ := http.NewRequest("GET", "https://example.com/redirect", nil)
+	via := []*http.Request{req}
+
+	// 1. Literal private IP redirect
+	redirectReqPrivate, _ := http.NewRequest("GET", "http://127.0.0.1/admin", nil)
+	err := client.client.CheckRedirect(redirectReqPrivate, via)
+	if err == nil || !strings.Contains(err.Error(), "blocked redirect to private IP") {
+		t.Errorf("expected blocked redirect for 127.0.0.1, got: %v", err)
+	}
+
+	// 2. Localhost hostname redirect
+	redirectReqLocalhost, _ := http.NewRequest("GET", "http://localhost/admin", nil)
+	err = client.client.CheckRedirect(redirectReqLocalhost, via)
+	if err == nil || !strings.Contains(err.Error(), "blocked redirect to private IP") {
+		t.Errorf("expected blocked redirect for localhost, got: %v", err)
+	}
+}
+
+func TestFetchWithStepping_NonRetryableError(t *testing.T) {
+	attempts := 0
+	mockTransport := &mockRoundTripper{
+		fn: func(req *http.Request) (*http.Response, error) {
+			attempts++
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("Not Found")),
+				Request:    req,
+			}, nil
+		},
+	}
+
+	client := NewTestClientWithTransport(mockTransport, true)
+	GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nDisallow:")
+
+	res, err := client.FetchWithStepping(context.Background(), "https://example.com/not-found")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Response.StatusCode != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", res.Response.StatusCode)
+	}
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 attempt for 404 non-retryable response, got %d", attempts)
 	}
 }
 

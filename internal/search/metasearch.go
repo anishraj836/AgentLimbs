@@ -90,10 +90,10 @@ func (a *MetasearchAdapter) Search(ctx context.Context, query string, topK int) 
 	}
 
 	sfKey := strings.ToLower(strings.TrimSpace(query))
-	execCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), searchDeadline)
-	defer cancel()
 
 	val, err, _ := a.singleflightGroup.Do(sfKey, func() (interface{}, error) {
+		execCtx, cancel := context.WithTimeout(context.Background(), searchDeadline)
+		defer cancel()
 		return a.executeMetasearch(execCtx, query, topK)
 	})
 
@@ -222,7 +222,10 @@ func (a *MetasearchAdapter) QueryDuckDuckGo(ctx context.Context, query string) (
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024*1024))
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DuckDuckGo endpoint returned HTTP status %d", resp.StatusCode)
