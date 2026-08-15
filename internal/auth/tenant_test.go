@@ -105,30 +105,57 @@ func TestTenantQuotaLimiter(t *testing.T) {
 	}
 }
 
-func TestTenantMiddleware_NonJWTBearerTokenPassThrough(t *testing.T) {
+func TestTenantMiddleware_UnauthenticatedIgnoresXTenantID(t *testing.T) {
 	calledNext := false
 	handler := TenantMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calledNext = true
 		tc, ok := GetTenantFromContext(r.Context())
-		if !ok || tc.TenantID != "custom_tenant" {
-			t.Errorf("expected tenant_id 'custom_tenant', got '%s'", tc.TenantID)
+		if !ok {
+			t.Fatalf("expected TenantContext to be set in context")
+		}
+		if tc.TenantID != "default_tenant" {
+			t.Errorf("expected tenant_id 'default_tenant', got '%s'", tc.TenantID)
+		}
+		if tc.PlanType != "free" {
+			t.Errorf("expected plan_type 'free', got '%s'", tc.PlanType)
+		}
+		if tc.Role != "user" {
+			t.Errorf("expected role 'user', got '%s'", tc.Role)
+		}
+		if tc.MaxReqs != 600 {
+			t.Errorf("expected maxReqs 600, got %d", tc.MaxReqs)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Send standard API key (non-3-part JWT) in Authorization Bearer header
+	// Attempt impersonation via X-Tenant-ID header without a valid JWT
 	req := httptest.NewRequest("GET", "/v1/search", nil)
-	req.Header.Set("Authorization", "Bearer my_opaque_api_key_12345")
-	req.Header.Set("X-Tenant-ID", "custom_tenant")
+	req.Header.Set("X-Tenant-ID", "attacker_impersonated_tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
 
 	if !calledNext {
-		t.Fatalf("expected downstream handler to be called for non-JWT bearer token")
+		t.Fatalf("expected downstream handler to be called for unauthenticated request")
 	}
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected HTTP 200 OK, got %d", rr.Code)
 	}
 }
 
+func TestTenantMiddleware_InvalidJWTReturnsUnauthorized(t *testing.T) {
+	handler := TenantMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Invalid JWT token
+	req := httptest.NewRequest("GET", "/v1/search", nil)
+	req.Header.Set("Authorization", "Bearer invalid.jwt.token")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected HTTP 401 Unauthorized for invalid JWT, got %d", rr.Code)
+	}
+}

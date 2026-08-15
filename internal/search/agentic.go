@@ -45,6 +45,7 @@ type AgenticPipeline struct {
 	metasearch              *MetasearchAdapter
 	engine                  *index.Engine
 	httpClient              *http.Client
+	llmProvider             LLMProvider
 	allowLoopbackForTesting bool
 }
 
@@ -56,12 +57,56 @@ func NewTestAgenticPipeline(engine *index.Engine, allowLoopback bool) *AgenticPi
 	if engine == nil {
 		engine = index.GlobalEngine
 	}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects (>10)")
+			}
+			if req.URL == nil || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
+				return fmt.Errorf("blocked redirect to unsupported scheme: %s", req.URL.Scheme)
+			}
+			if !allowLoopback {
+				host := req.URL.Hostname()
+				if ip := net.ParseIP(host); ip != nil {
+					if crawler.IsPrivateIP(ip) {
+						return fmt.Errorf("blocked redirect to private IP host: %s", host)
+					}
+				} else {
+					ips, err := net.LookupIP(host)
+					if err != nil {
+						return fmt.Errorf("blocked redirect to unresolvable host %s: %w", host, err)
+					}
+					if len(ips) == 0 {
+						return fmt.Errorf("no IP addresses found for redirect host %s", host)
+					}
+					for _, ip := range ips {
+						if crawler.IsPrivateIP(ip) {
+							return fmt.Errorf("blocked redirect to private IP host: %s (%s)", host, ip.String())
+						}
+					}
+				}
+			}
+			return nil
+		},
+	}
 	return &AgenticPipeline{
 		metasearch:              NewMetasearchAdapter(engine),
 		engine:                  engine,
-		httpClient:              &http.Client{Timeout: 30 * time.Second},
+		httpClient:              client,
+		llmProvider:             nil,
 		allowLoopbackForTesting: allowLoopback,
 	}
+}
+
+func (p *AgenticPipeline) WithLLMProvider(provider LLMProvider) *AgenticPipeline {
+	p.llmProvider = provider
+	return p
+}
+
+func (p *AgenticPipeline) WithMetasearch(metasearch *MetasearchAdapter) *AgenticPipeline {
+	p.metasearch = metasearch
+	return p
 }
 
 func validateLLMBaseURL(rawURL string) error {
@@ -104,6 +149,10 @@ func validateLLMBaseURLWithLoopback(rawURL string, allowLoopback bool) error {
 }
 
 func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest) (*AgenticSearchResponse, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	t0 := time.Now()
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
@@ -157,6 +206,9 @@ func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest)
 
 	// Step 2: Execute Hybrid Metasearch & Web Crawling
 	hits, err := p.metasearch.Search(ctx, query, topK*2)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil || len(hits) == 0 {
 		// Fallback to local index
 		titles, urls, bodies := p.engine.GetMetadataMaps()
@@ -177,11 +229,37 @@ func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest)
 		hits = hits[:topK]
 	}
 
-	// Step 3: LLM Reasoning & Answer Synthesis (DeepSeek / OpenAI or Local Synthesis)
+	// Step 3: LLM Reasoning & Answer Synthesis
 	var finalAnswer string
 	var modelUsed string
 
-	if apiKey != "" {
+	if p.llmProvider != nil {
+		steps = append(steps, AgenticStep{
+			StepIndex:   3,
+			Description: fmt.Sprintf("%s Synthesis", p.llmProvider.Name()),
+			Status:      "in_progress",
+			Details:     "Generating synthesized answer using configured LLM provider...",
+		})
+		answer, callErr := p.llmProvider.GenerateAnswer(ctx, query, hits, LLMOptions{
+			Model:       model,
+			Temperature: 0.3,
+			MaxTokens:   1024,
+		})
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if callErr == nil && answer != "" {
+			finalAnswer = answer
+			modelUsed = p.llmProvider.Name()
+			steps[len(steps)-1].Status = "completed"
+			steps[len(steps)-1].Details = fmt.Sprintf("Successfully synthesized answer using %s LLM.", p.llmProvider.Name())
+		} else {
+			finalAnswer = p.fallbackLocalSynthesis(query, hits)
+			modelUsed = "local-deterministic-synthesizer"
+			steps[len(steps)-1].Status = "fallback"
+			steps[len(steps)-1].Details = fmt.Sprintf("LLM call failed (%v). Generated local summary fallback.", callErr)
+		}
+	} else if apiKey != "" {
 		steps = append(steps, AgenticStep{
 			StepIndex:   3,
 			Description: fmt.Sprintf("DeepSeek AI Reasoner (%s) Synthesis", model),
@@ -190,6 +268,9 @@ func (p *AgenticPipeline) Execute(ctx context.Context, req AgenticSearchRequest)
 		})
 
 		answer, callErr := p.callDeepSeek(ctx, baseURL, apiKey, model, query, hits)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if callErr == nil && answer != "" {
 			finalAnswer = answer
 			modelUsed = model
@@ -230,13 +311,14 @@ func (p *AgenticPipeline) callDeepSeek(ctx context.Context, baseURL, apiKey, mod
 	}
 
 	var contextBuf bytes.Buffer
+	contextBuf.WriteString("<context>\n")
 	for i, h := range hits {
-		contextBuf.WriteString(fmt.Sprintf("[%d] Title: %s\nURL: %s\nSnippet: %s\n\n", i+1, h.Title, h.URL, h.Snippet))
+		contextBuf.WriteString(fmt.Sprintf("[%d] Title: %s\nURL: %s\nSnippet: %s\n\n", i+1, SanitizeXMLContext(h.Title), SanitizeXMLContext(h.URL), SanitizeXMLContext(h.Snippet)))
 	}
+	contextBuf.WriteString("</context>")
 
-	systemPrompt := "You are AgentLimbs AI, an expert agentic search assistant. Synthesize a clear, concise, accurate answer to the user's query based strictly on the provided context passages. Use markdown formatting and cite sources using [1], [2], etc. If context is insufficient, state what is known accurately."
-
-	userPrompt := fmt.Sprintf("User Query: %s\n\nRetrieved Context Passages:\n%s\nProvide a comprehensive, well-structured answer with markdown formatting and inline citations.", query, contextBuf.String())
+	systemPrompt := defaultSystemPrompt
+	userPrompt := fmt.Sprintf("User Query: %s\n\nRetrieved Context Passages:\n%s\n\nProvide a comprehensive, well-structured answer with markdown formatting and inline citations.", query, contextBuf.String())
 
 	payload := map[string]interface{}{
 		"model": model,

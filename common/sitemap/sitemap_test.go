@@ -125,4 +125,3 @@ func TestParseSitemapEmptyInput(t *testing.T) {
 		t.Errorf("expected error for empty XML bytes, got nil")
 	}
 }
-

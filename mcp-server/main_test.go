@@ -55,44 +55,29 @@ func TestLargePayload(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start agent-limbs-mcp: %v", err)
 	}
+	defer func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	}()
+
+	validJSON := `{"jsonrpc":"2.0","id":2,"method":"initialize"}` + "\n"
 
 	go func() {
-		defer stdin.Close()
 		stdin.Write(payloadBytes)
 		stdin.Write([]byte("\n"))
+		time.Sleep(50 * time.Millisecond)
+		stdin.Write([]byte(validJSON))
+		time.Sleep(50 * time.Millisecond)
+		stdin.Close()
 	}()
 
-	// Read output with a timeout
-	done := make(chan struct{})
-	var outBytes []byte
+	buf := make([]byte, 4096)
+	n, _ := stdout.Read(buf)
+	outStr := string(buf[:n])
 
-	go func() {
-		// Just read enough to see if it responds or doesn't crash with too long error
-		buf := make([]byte, 1024)
-		n, _ := stdout.Read(buf)
-		if n > 0 {
-			outBytes = buf[:n]
-		}
-		close(done)
-	}()
-
-	select {
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Timeout waiting for response from mcp-server")
-	case <-done:
-		// Check that it didn't exit with a panic about bufio scanner
-		if len(outBytes) > 0 {
-			outStr := string(outBytes)
-			// It should give an error like "Method not found" or process it, but shouldn't crash
-			if !strings.Contains(outStr, "jsonrpc") && !strings.Contains(outStr, "error") {
-				// The actual response might just be an RPC error for unknown method, which is valid.
-				t.Logf("Received response: %s", outStr)
-			}
-		}
+	if !strings.Contains(outStr, "-32700") || !strings.Contains(outStr, "line length exceeded 10MB") {
+		t.Errorf("expected line length exceeded 10MB error response, got: %s", outStr)
 	}
-
-	cmd.Process.Kill()
-	cmd.Wait()
 }
 
 func TestStdioInvalidJSON_Continues(t *testing.T) {

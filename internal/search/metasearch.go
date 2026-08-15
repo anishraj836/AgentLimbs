@@ -20,13 +20,10 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-type DDGResult struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet"`
-}
+type DDGResult = SearchResult
 
 type MetasearchAdapter struct {
+	provider          SearchProvider
 	baseURL           string
 	httpClient        *http.Client
 	crawlerClient     *crawler.Client
@@ -41,6 +38,7 @@ func NewMetasearchAdapter(engine *index.Engine) *MetasearchAdapter {
 		engine = index.GlobalEngine
 	}
 	return &MetasearchAdapter{
+		provider:         NewDuckDuckGoSearchProvider(),
 		baseURL:          "https://html.duckduckgo.com/html/",
 		httpClient:       &http.Client{Timeout: 5 * time.Second},
 		crawlerClient:    crawler.NewClient(),
@@ -50,13 +48,24 @@ func NewMetasearchAdapter(engine *index.Engine) *MetasearchAdapter {
 	}
 }
 
+func (a *MetasearchAdapter) WithProvider(provider SearchProvider) *MetasearchAdapter {
+	a.provider = provider
+	return a
+}
+
 func (a *MetasearchAdapter) WithBaseURL(baseURL string) *MetasearchAdapter {
 	a.baseURL = baseURL
+	if ddg, ok := a.provider.(*DuckDuckGoSearchProvider); ok && ddg != nil {
+		ddg.WithBaseURL(baseURL)
+	}
 	return a
 }
 
 func (a *MetasearchAdapter) WithHTTPClient(client *http.Client) *MetasearchAdapter {
 	a.httpClient = client
+	if ddg, ok := a.provider.(*DuckDuckGoSearchProvider); ok && ddg != nil {
+		ddg.WithHTTPClient(client)
+	}
 	return a
 }
 
@@ -75,6 +84,20 @@ func (a *MetasearchAdapter) WithConcurrencyLimit(limit int) *MetasearchAdapter {
 	return a
 }
 
+func (a *MetasearchAdapter) getProvider() SearchProvider {
+	if a.provider != nil {
+		return a.provider
+	}
+	ddg := NewDuckDuckGoSearchProvider()
+	if a.baseURL != "" {
+		ddg.WithBaseURL(a.baseURL)
+	}
+	if a.httpClient != nil {
+		ddg.WithHTTPClient(a.httpClient)
+	}
+	return ddg
+}
+
 func (a *MetasearchAdapter) Search(ctx context.Context, query string, topK int) ([]HybridSearchHit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -89,27 +112,34 @@ func (a *MetasearchAdapter) Search(ctx context.Context, query string, topK int) 
 		searchDeadline = 1500 * time.Millisecond
 	}
 
-	sfKey := strings.ToLower(strings.TrimSpace(query))
+	provider := a.getProvider()
+	sfKey := fmt.Sprintf("%s:%s:%d", provider.Name(), strings.ToLower(strings.TrimSpace(query)), topK)
 
-	val, err, _ := a.singleflightGroup.Do(sfKey, func() (interface{}, error) {
+	ch := a.singleflightGroup.DoChan(sfKey, func() (interface{}, error) {
 		execCtx, cancel := context.WithTimeout(context.Background(), searchDeadline)
 		defer cancel()
 		return a.executeMetasearch(execCtx, query, topK)
 	})
 
-	if err != nil {
-		return nil, err
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		if res.Val == nil {
+			return []HybridSearchHit{}, nil
+		}
+		return res.Val.([]HybridSearchHit), nil
 	}
-	if val == nil {
-		return []HybridSearchHit{}, nil
-	}
-	return val.([]HybridSearchHit), nil
 }
 
 func (a *MetasearchAdapter) executeMetasearch(ctx context.Context, query string, topK int) ([]HybridSearchHit, error) {
-	ddgResults, _ := a.QueryDuckDuckGo(ctx, query)
+	provider := a.getProvider()
+	results, _ := provider.Search(ctx, query, topK*2)
 
-	if len(ddgResults) > 0 {
+	if len(results) > 0 {
 		var g errgroup.Group
 		limit := a.concurrencyLimit
 		if limit <= 0 {
@@ -117,7 +147,12 @@ func (a *MetasearchAdapter) executeMetasearch(ctx context.Context, query string,
 		}
 		g.SetLimit(limit)
 
-		for _, res := range ddgResults {
+		cClient := a.crawlerClient
+		if cClient == nil {
+			cClient = crawler.NewClient()
+		}
+
+		for _, res := range results {
 			targetURL := res.URL
 			initialTitle := res.Title
 
@@ -126,22 +161,7 @@ func (a *MetasearchAdapter) executeMetasearch(ctx context.Context, query string,
 					return nil
 				}
 
-				var fetchRes *crawler.FetchResult
-				var err error
-				if a.crawlerClient != nil {
-					fetchRes, err = a.crawlerClient.FetchSmart(ctx, targetURL, false)
-				} else {
-					req, reqErr := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
-					if reqErr != nil {
-						return nil
-					}
-					resp, doErr := a.httpClient.Do(req)
-					if doErr != nil {
-						return nil
-					}
-					fetchRes = &crawler.FetchResult{Response: resp, FinalURL: targetURL}
-				}
-
+				fetchRes, err := cClient.FetchSmart(ctx, targetURL, false)
 				if err != nil || fetchRes == nil || fetchRes.Response == nil {
 					return nil
 				}
@@ -197,47 +217,15 @@ func (a *MetasearchAdapter) executeMetasearch(ctx context.Context, query string,
 	return hits, nil
 }
 
-func (a *MetasearchAdapter) QueryDuckDuckGo(ctx context.Context, query string) ([]DDGResult, error) {
-	reqURL := a.baseURL
-	if strings.Contains(reqURL, "?") {
-		reqURL += "&q=" + url.QueryEscape(query)
-	} else {
-		reqURL += "?q=" + url.QueryEscape(query)
+func (a *MetasearchAdapter) QueryDuckDuckGo(ctx context.Context, query string) ([]SearchResult, error) {
+	ddg := NewDuckDuckGoSearchProvider()
+	if a.baseURL != "" {
+		ddg.WithBaseURL(a.baseURL)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
-	if err != nil {
-		return nil, err
+	if a.httpClient != nil {
+		ddg.WithHTTPClient(a.httpClient)
 	}
-
-	profile := crawler.GetRotatedHeaderProfile()
-	crawler.ApplyAntiBotHeaders(req, profile)
-
-	client := a.httpClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024*1024))
-		resp.Body.Close()
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DuckDuckGo endpoint returned HTTP status %d", resp.StatusCode)
-	}
-
-	limited := io.LimitReader(resp.Body, 10*1024*1024)
-	htmlBytes, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, err
-	}
-
-	return ParseDDGHTML(htmlBytes)
+	return ddg.Search(ctx, query, 0)
 }
 
 func ParseDDGHTML(htmlContent []byte) ([]DDGResult, error) {

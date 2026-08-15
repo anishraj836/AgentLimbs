@@ -84,13 +84,15 @@ func main() {
 				}
 
 				commitCtx := ctx
+				var cancelCommit context.CancelFunc
 				if ctx.Err() != nil {
-					var cancelCommit context.CancelFunc
 					commitCtx, cancelCommit = context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancelCommit()
 				}
 				if err := consumer.Commit(commitCtx, msg); err != nil {
 					logger.Log.Error("Failed to commit offset for index_updates message", zap.Error(err))
+				}
+				if cancelCommit != nil {
+					cancelCommit()
 				}
 			}
 		}()
@@ -113,6 +115,13 @@ func main() {
 	r.Get("/document/{id}", handler.GetDocument)
 	r.Get("/stats", handler.Stats)
 	r.Get("/health", handler.Health)
+	r.Get("/healthz", handler.Healthz)
+	r.Get("/livez", handler.Livez)
+	r.Get("/readyz", handler.Readyz)
+	r.Get("/v1/health", handler.Health)
+	r.Get("/v1/healthz", handler.Healthz)
+	r.Get("/v1/livez", handler.Livez)
+	r.Get("/v1/readyz", handler.Readyz)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -120,7 +129,7 @@ func main() {
 	}
 
 	logger.Log.Info("Search Service listening on port " + port)
-	
+
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           r,
@@ -138,10 +147,10 @@ func main() {
 
 	<-ctx.Done()
 	logger.Log.Info("Shutting down Search Service gracefully...")
-	
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Log.Error("Search Service forced to shutdown", zap.Error(err))
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -285,31 +286,166 @@ func TestVectorIndex_DeleteVector(t *testing.T) {
 	}
 }
 
-func TestLoadFromDB_IncrementalMergePreservesNewDocs(t *testing.T) {
+func TestBM25_NegativeAndZeroTopK(t *testing.T) {
+	eng := NewEngine()
+	eng.IndexDocument("https://example.com/doc1", "Test Title", "Golang distributed indexing system", map[string][]int{"golang": {0}, "indexing": {2}}, 4)
+
+	// SearchBM25 with topK <= 0 must return nil without panicking
+	for _, k := range []int{-10, -1, 0} {
+		hits := eng.SearchBM25("golang indexing", k)
+		if hits != nil {
+			t.Errorf("SearchBM25 with topK=%d expected nil, got %v", k, hits)
+		}
+	}
+
+	// Direct RankDocuments call with topK <= 0 must return nil without panicking
+	titles, urls, bodies := eng.GetMetadataMaps()
+	for _, k := range []int{-5, -1, 0} {
+		hits := RankDocuments("golang indexing", eng.GetInvertedIndex(), titles, urls, bodies, k)
+		if hits != nil {
+			t.Errorf("RankDocuments with topK=%d expected nil, got %v", k, hits)
+		}
+	}
+}
+
+func TestLoadSnapshot_EmptyJSONNilMapProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	emptySnapPath := filepath.Join(tmpDir, "empty_snapshot.json")
+	if err := os.WriteFile(emptySnapPath, []byte("{}"), 0644); err != nil {
+		t.Fatalf("Failed to write empty snapshot file: %v", err)
+	}
+
+	// 1. InvertedIndex LoadSnapshot from empty JSON
+	inv := NewInvertedIndex()
+	if err := inv.LoadSnapshot(emptySnapPath); err != nil {
+		t.Fatalf("inv.LoadSnapshot on empty JSON failed: %v", err)
+	}
+	// AddDocument must not panic on nil map assignment
+	inv.AddDocument("doc1", map[string][]int{"test": {0}}, 1)
+	pl, exists := inv.GetPostingList("test")
+	if !exists || len(pl.Entries) != 1 {
+		t.Errorf("Expected posting list for 'test' after AddDocument on restored empty snapshot")
+	}
+	if length := inv.GetDocLength("doc1"); length != 1 {
+		t.Errorf("Expected docLength 1 for doc1, got %d", length)
+	}
+
+	// 2. VectorIndex LoadSnapshot from empty JSON
+	vi := NewVectorIndex(3)
+	if err := vi.LoadSnapshot(emptySnapPath); err != nil {
+		t.Fatalf("vi.LoadSnapshot on empty JSON failed: %v", err)
+	}
+	// AddVector must not panic on nil map assignment
+	if err := vi.AddVector("doc1", []float64{1.0, 0.0, 0.0}); err != nil {
+		t.Fatalf("vi.AddVector on restored empty snapshot failed: %v", err)
+	}
+	results := vi.SearchNearest([]float64{1.0, 0.0, 0.0}, 1)
+	if len(results) != 1 || results[0].DocID != "doc1" {
+		t.Errorf("Expected doc1 in vector search results, got %v", results)
+	}
+}
+
+func TestLoadSnapshot_ZeroByteFileHandling(t *testing.T) {
+	tmpDir := t.TempDir()
+	zeroByteSnapPath := filepath.Join(tmpDir, "zero_byte_snapshot.json")
+	if err := os.WriteFile(zeroByteSnapPath, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write zero byte snapshot file: %v", err)
+	}
+
+	// 1. InvertedIndex LoadSnapshot from 0-byte file succeeds and allows subsequent AddDocument
+	inv := NewInvertedIndex()
+	if err := inv.LoadSnapshot(zeroByteSnapPath); err != nil {
+		t.Fatalf("inv.LoadSnapshot on 0-byte file failed: %v", err)
+	}
+	inv.AddDocument("doc1", map[string][]int{"golang": {0, 1}}, 2)
+	pl, exists := inv.GetPostingList("golang")
+	if !exists || len(pl.Entries) != 1 {
+		t.Errorf("Expected posting list for 'golang' after AddDocument on restored 0-byte snapshot")
+	}
+	if length := inv.GetDocLength("doc1"); length != 2 {
+		t.Errorf("Expected docLength 2 for doc1, got %d", length)
+	}
+
+	// 2. VectorIndex LoadSnapshot from 0-byte file succeeds and allows subsequent AddVector
+	vi := NewVectorIndex(3)
+	if err := vi.LoadSnapshot(zeroByteSnapPath); err != nil {
+		t.Fatalf("vi.LoadSnapshot on 0-byte file failed: %v", err)
+	}
+	if err := vi.AddVector("doc1", []float64{0.5, 0.5, 0.5}); err != nil {
+		t.Fatalf("vi.AddVector on restored 0-byte snapshot failed: %v", err)
+	}
+	results := vi.SearchNearest([]float64{0.5, 0.5, 0.5}, 1)
+	if len(results) != 1 || results[0].DocID != "doc1" {
+		t.Errorf("Expected doc1 in vector search results after 0-byte snapshot restore, got %v", results)
+	}
+}
+
+func TestLoadFromDB_PurgeExpiredAndTrieIdempotency(t *testing.T) {
+	ctx := context.Background()
+	permURL := "https://example.com/perm-test"
+	tempURL := "https://example.com/temp-test"
+
+	// 1. Save permanent and short-lived documents
+	_ = storage.SaveCrawledDocumentWithTTL(ctx, permURL, "Permanent Doc", "Golang permanent search indexing document", 5, "test", permURL, 1*time.Hour)
+	_ = storage.SaveCrawledDocumentWithTTL(ctx, tempURL, "Temporary Doc", "Golang temporary expiring indexing document", 5, "test", tempURL, 300*time.Millisecond)
+
 	eng := NewEngine()
 
-	// 1. Index an in-memory document directly
-	eng.IndexDocumentDirectly("https://inmemory.example.com", "In-Memory Title", "Unique content stored only in memory", 6)
-
-	// 2. Save a different document to DB / storage
-	ctx := context.Background()
-	_ = storage.SaveCrawledDocument(ctx, "https://db.example.com", "DB Title", "Persisted content loaded from storage layer", 6, "web_crawled", "https://db.example.com")
-
-	// 3. Run LoadFromDB
-	err := eng.LoadFromDB(ctx)
-	if err != nil {
+	// 2. Load from DB initially
+	if err := eng.LoadFromDB(ctx); err != nil {
 		t.Fatalf("LoadFromDB failed: %v", err)
 	}
 
-	// 4. Verify BOTH in-memory and DB documents exist and are searchable via SearchBM25
-	memHits := eng.SearchBM25("Unique content", 5)
-	if len(memHits) == 0 || memHits[0].DocID != "https://inmemory.example.com" {
-		t.Errorf("expected in-memory document to be preserved after LoadFromDB, got hits: %v", memHits)
+	permHits := eng.SearchBM25("permanent", 5)
+	if len(permHits) == 0 || permHits[0].DocID != permURL {
+		t.Errorf("Expected perm document indexed, got %v", permHits)
+	}
+	tempHits := eng.SearchBM25("temporary", 5)
+	if len(tempHits) == 0 || tempHits[0].DocID != tempURL {
+		t.Errorf("Expected temp document indexed, got %v", tempHits)
 	}
 
-	dbHits := eng.SearchBM25("Persisted content", 5)
-	if len(dbHits) == 0 || dbHits[0].DocID != "https://db.example.com" {
-		t.Errorf("expected DB document to be loaded and indexed, got hits: %v", dbHits)
+	// Measure autocomplete frequency for 'golang'
+	trieRes1 := eng.GetTrie().SearchPrefix("golang", 5)
+	if len(trieRes1) == 0 {
+		t.Fatalf("Expected autocomplete result for 'golang'")
+	}
+	initialFreq := trieRes1[0].Frequency
+
+	// 3. LoadFromDB second time -> MUST be idempotent, no frequency doubling
+	if err := eng.LoadFromDB(ctx); err != nil {
+		t.Fatalf("LoadFromDB second run failed: %v", err)
+	}
+	trieRes2 := eng.GetTrie().SearchPrefix("golang", 5)
+	if len(trieRes2) == 0 {
+		t.Fatalf("Expected autocomplete result for 'golang' after second LoadFromDB")
+	}
+	if trieRes2[0].Frequency != initialFreq {
+		t.Errorf("Autocomplete frequency changed after second LoadFromDB: expected %d, got %d", initialFreq, trieRes2[0].Frequency)
+	}
+
+	// 4. Expire temp doc, delete from DB, and reload
+	time.Sleep(350 * time.Millisecond)
+	_, _ = storage.DeleteExpiredDocuments(ctx)
+
+	if err := eng.LoadFromDB(ctx); err != nil {
+		t.Fatalf("LoadFromDB after expiration purge failed: %v", err)
+	}
+
+	// Verify temp doc is purged from inverted index and metadata shards
+	tempHitsAfter := eng.SearchBM25("temporary", 5)
+	if len(tempHitsAfter) != 0 {
+		t.Errorf("Expected expired temp doc to be purged, but found hits: %v", tempHitsAfter)
+	}
+	_, _, _, exists := eng.GetDocumentMetadata(tempURL)
+	if exists {
+		t.Errorf("Expected expired temp doc to be purged from metadata shards, but still exists")
+	}
+
+	// Permanent doc still exists
+	permHitsAfter := eng.SearchBM25("permanent", 5)
+	if len(permHitsAfter) == 0 || permHitsAfter[0].DocID != permURL {
+		t.Errorf("Expected permanent doc to remain indexed after purge, got %v", permHitsAfter)
 	}
 }
 
@@ -361,3 +497,30 @@ func TestEngine_ThreadSafeAccessors(t *testing.T) {
 	wg.Wait()
 }
 
+func TestFunctionalOptionsAndInterfaces(t *testing.T) {
+	customEmbedder := NewSubwordEmbedder(64)
+	eng := NewEngine(
+		WithEmbedder(customEmbedder),
+		WithDimensions(64),
+	)
+
+	if eng.ActiveEmbedder.Dimensions() != 64 {
+		t.Errorf("expected embedder dimensions 64, got %d", eng.ActiveEmbedder.Dimensions())
+	}
+	if eng.GetVectorIndex().dimensions != 64 {
+		t.Errorf("expected vector index dimensions 64, got %d", eng.GetVectorIndex().dimensions)
+	}
+
+	// Verify interface conformance at runtime
+	var _ Searcher = eng
+	var _ MetadataReader = eng
+	var _ VectorStore = eng.GetVectorIndex()
+	var _ Autocompleter = eng.GetTrie()
+	var _ Embedder = customEmbedder
+
+	// Test ExtractHighlightedSnippet
+	snippet := ExtractHighlightedSnippet("The quick brown fox jumps over the lazy dog", []string{"brown", "fox"}, 100)
+	if snippet == "" || !strings.Contains(snippet, "<mark>brown</mark>") {
+		t.Errorf("expected highlighted snippet containing <mark>brown</mark>, got %s", snippet)
+	}
+}

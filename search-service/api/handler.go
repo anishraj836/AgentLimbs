@@ -1,18 +1,23 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/crawler-monorepo/common/kafka"
 	"github.com/crawler-monorepo/internal/index"
 	"github.com/crawler-monorepo/internal/search"
+	"github.com/crawler-monorepo/internal/storage"
 	"github.com/go-chi/chi/v5"
-	"os"
-	"crypto/subtle"
 )
 
 func checkAuth(w http.ResponseWriter, r *http.Request) bool {
@@ -30,7 +35,15 @@ func checkAuth(w http.ResponseWriter, r *http.Request) bool {
 	if apiKey == "" {
 		apiKey = r.URL.Query().Get("api_key")
 	}
-	if apiKey == "" || subtle.ConstantTimeCompare([]byte(apiKey), []byte(expectedKey)) != 1 {
+	if apiKey == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"Unauthorized"}`))
+		return false
+	}
+	h1 := sha256.Sum256([]byte(apiKey))
+	h2 := sha256.Sum256([]byte(expectedKey))
+	if subtle.ConstantTimeCompare(h1[:], h2[:]) != 1 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"error":"Unauthorized"}`))
@@ -55,14 +68,16 @@ type SearchRequest struct {
 }
 
 type SearchResponse struct {
-	Query     string                  `json:"query"`
-	TotalHits int                     `json:"total_hits"`
-	LatencyMs float64                 `json:"latency_ms"`
+	Query     string                   `json:"query"`
+	TotalHits int                      `json:"total_hits"`
+	LatencyMs float64                  `json:"latency_ms"`
 	Results   []search.HybridSearchHit `json:"results"`
 }
 
 func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
-	if !checkAuth(w, r) { return }
+	if !checkAuth(w, r) {
+		return
+	}
 	t0 := time.Now()
 	var req SearchRequest
 
@@ -139,7 +154,9 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SearchHandler) Autocomplete(w http.ResponseWriter, r *http.Request) {
-	if !checkAuth(w, r) { return }
+	if !checkAuth(w, r) {
+		return
+	}
 	prefix := r.URL.Query().Get("q")
 	limitStr := r.URL.Query().Get("limit")
 	limit := 5
@@ -163,7 +180,9 @@ func (h *SearchHandler) Autocomplete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SearchHandler) GetDocument(w http.ResponseWriter, r *http.Request) {
-	if !checkAuth(w, r) { return }
+	if !checkAuth(w, r) {
+		return
+	}
 	docID := chi.URLParam(r, "*")
 	if docID == "" {
 		docID = chi.URLParam(r, "id")
@@ -192,7 +211,9 @@ func (h *SearchHandler) GetDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SearchHandler) Stats(w http.ResponseWriter, r *http.Request) {
-	if !checkAuth(w, r) { return }
+	if !checkAuth(w, r) {
+		return
+	}
 	totalDocs, avgDocLen, vocabSize := h.engine.GetInvertedIndex().GetStats()
 	trieNodeCount := h.engine.GetTrie().NodeCount()
 
@@ -207,5 +228,58 @@ func (h *SearchHandler) Stats(w http.ResponseWriter, r *http.Request) {
 
 func (h *SearchHandler) Health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok","service":"search"}`))
+}
+
+func (h *SearchHandler) Healthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok","service":"search"}`))
+}
+
+func (h *SearchHandler) Livez(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"alive","service":"search"}`))
+}
+
+func (h *SearchHandler) Readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	checks := make(map[string]string)
+	allHealthy := true
+
+	if err := storage.PingDB(ctx); err != nil {
+		checks["database"] = fmt.Sprintf("error: %v", err)
+		allHealthy = false
+	} else {
+		checks["database"] = "ok"
+	}
+
+	if err := kafka.CheckKafkaReadiness(ctx); err != nil {
+		checks["kafka"] = fmt.Sprintf("error: %v", err)
+		allHealthy = false
+	} else {
+		checks["kafka"] = "ok"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if !allHealthy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "unhealthy",
+			"service": "search",
+			"checks":  checks,
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ready",
+		"service": "search",
+		"checks":  checks,
+	})
 }

@@ -271,6 +271,7 @@ func IsSPAPlaceholder(html string) bool {
 
 // RobotsGroup defines access directives for a user-agent group in robots.txt.
 type RobotsGroup struct {
+	UserAgents []string
 	UserAgent  string
 	Disallowed []string
 	CrawlDelay int
@@ -309,12 +310,22 @@ func ParseRobotsTxt(content string) *RobotsData {
 
 		switch key {
 		case "user-agent":
-			if currentGroup != nil {
+			valLower := strings.ToLower(val)
+			if currentGroup != nil && len(currentGroup.Disallowed) > 0 {
 				rd.groups = append(rd.groups, *currentGroup)
+				currentGroup = nil
 			}
-			currentGroup = &RobotsGroup{
-				UserAgent:  strings.ToLower(val),
-				Disallowed: make([]string, 0),
+			if currentGroup == nil {
+				currentGroup = &RobotsGroup{
+					UserAgents: []string{valLower},
+					UserAgent:  valLower,
+					Disallowed: make([]string, 0),
+				}
+			} else {
+				currentGroup.UserAgents = append(currentGroup.UserAgents, valLower)
+				if currentGroup.UserAgent == "" {
+					currentGroup.UserAgent = valLower
+				}
 			}
 		case "disallow":
 			if currentGroup != nil && val != "" {
@@ -346,12 +357,36 @@ func (rd *RobotsData) IsAllowed(userAgent, targetURL string) bool {
 
 	uaLower := strings.ToLower(userAgent)
 
-	for _, group := range rd.groups {
-		if group.UserAgent == "*" || strings.Contains(uaLower, group.UserAgent) {
-			for _, disallow := range group.Disallowed {
-				if disallow != "" && strings.HasPrefix(reqPath, disallow) {
-					return false
+	var bestGroup *RobotsGroup
+	bestMatchLen := -1
+
+	for i := range rd.groups {
+		group := &rd.groups[i]
+		agents := group.UserAgents
+		if len(agents) == 0 && group.UserAgent != "" {
+			agents = []string{group.UserAgent}
+		}
+
+		for _, ua := range agents {
+			ua = strings.TrimSpace(strings.ToLower(ua))
+			if ua == "*" {
+				if bestMatchLen < 0 {
+					bestGroup = group
+					bestMatchLen = 0
 				}
+			} else if strings.Contains(uaLower, ua) {
+				if len(ua) > bestMatchLen {
+					bestGroup = group
+					bestMatchLen = len(ua)
+				}
+			}
+		}
+	}
+
+	if bestGroup != nil {
+		for _, disallow := range bestGroup.Disallowed {
+			if disallow != "" && strings.HasPrefix(reqPath, disallow) {
+				return false
 			}
 		}
 	}
@@ -361,22 +396,70 @@ func (rd *RobotsData) IsAllowed(userAgent, targetURL string) bool {
 
 // DomainCacheManager caches parsed robots.txt rules per hostname.
 type DomainCacheManager struct {
-	mu      sync.RWMutex
-	cache   map[string]*RobotsData
-	expiry  map[string]time.Time
-	sfGroup singleflight.Group
+	mu         sync.RWMutex
+	cache      map[string]*RobotsData
+	expiry     map[string]time.Time
+	sfGroup    singleflight.Group
+	maxEntries int
 }
 
+const defaultMaxDomainCache = 10000
+
 var GlobalDomainCache = &DomainCacheManager{
-	cache:  make(map[string]*RobotsData),
-	expiry: make(map[string]time.Time),
+	cache:      make(map[string]*RobotsData),
+	expiry:     make(map[string]time.Time),
+	maxEntries: defaultMaxDomainCache,
 }
 
 func (cm *DomainCacheManager) FetchAndCache(domain, rawContent string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+
+	maxCap := cm.maxEntries
+	if maxCap <= 0 {
+		maxCap = defaultMaxDomainCache
+	}
+
+	now := time.Now()
+	if len(cm.cache) >= maxCap {
+		for d, exp := range cm.expiry {
+			if now.After(exp) {
+				delete(cm.cache, d)
+				delete(cm.expiry, d)
+			}
+		}
+		if len(cm.cache) >= maxCap {
+			var oldestDomain string
+			var oldestExp time.Time
+			first := true
+			for d, exp := range cm.expiry {
+				if first || exp.Before(oldestExp) {
+					oldestDomain = d
+					oldestExp = exp
+					first = false
+				}
+			}
+			if oldestDomain != "" {
+				delete(cm.cache, oldestDomain)
+				delete(cm.expiry, oldestDomain)
+			}
+		}
+	}
+
 	cm.cache[domain] = ParseRobotsTxt(rawContent)
-	cm.expiry[domain] = time.Now().Add(24 * time.Hour)
+	cm.expiry[domain] = now.Add(24 * time.Hour)
+}
+
+func (cm *DomainCacheManager) CleanupExpired() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	now := time.Now()
+	for d, exp := range cm.expiry {
+		if now.After(exp) {
+			delete(cm.cache, d)
+			delete(cm.expiry, d)
+		}
+	}
 }
 
 func (cm *DomainCacheManager) HasDomainCached(targetURL string) bool {
@@ -597,7 +680,9 @@ func (c *Client) EnsureRobotsCached(ctx context.Context, targetURL string) {
 
 	fetchFunc := func(d string) (string, error) {
 		robotsURL := reqURL.Scheme + "://" + reqURL.Host + "/robots.txt"
-		req, err := http.NewRequestWithContext(ctx, "GET", robotsURL, nil)
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer bgCancel()
+		req, err := http.NewRequestWithContext(bgCtx, "GET", robotsURL, nil)
 		if err != nil {
 			return "", nil
 		}
@@ -699,6 +784,7 @@ func (c *Client) Fetch(ctx context.Context, targetURL string) (*FetchResult, err
 		}
 
 		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 			resp.Body.Close()
 			lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, targetURL)
 			if !sleepWithContext(ctx, backoff) {
@@ -734,7 +820,10 @@ func (c *Client) FetchWithStepping(ctx context.Context, targetURL string) (*Fetc
 		code := res.Response.StatusCode
 		if code == http.StatusForbidden || code == http.StatusUnauthorized || code == http.StatusTooManyRequests {
 			needsStepUp = true
-			res.Response.Body.Close()
+			if res.Response.Body != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(res.Response.Body, 64*1024))
+				res.Response.Body.Close()
+			}
 		}
 	}
 
@@ -752,7 +841,8 @@ func (c *Client) FetchWithStepping(ctx context.Context, targetURL string) (*Fetc
 		return nil, ctx.Err()
 	}
 
-	req, reqErr := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+	stepCtx := WithRetryAttempt(ctx, 1)
+	req, reqErr := http.NewRequestWithContext(stepCtx, "GET", targetURL, nil)
 	if reqErr != nil {
 		return nil, reqErr
 	}
@@ -769,6 +859,18 @@ func (c *Client) FetchWithStepping(ctx context.Context, targetURL string) (*Fetc
 	}
 	ApplyAntiBotHeaders(req, stealthProfile)
 	req.Header.Set("Cache-Control", "max-age=0")
+
+	if reqID, ok := ctx.Value(middleware.RequestIDKey).(string); ok && reqID != "" {
+		req.Header.Set("X-Request-ID", reqID)
+	} else if reqID, ok := ctx.Value("x-request-id").(string); ok && reqID != "" {
+		req.Header.Set("X-Request-ID", reqID)
+	}
+
+	if span, ok := tracing.FromContext(ctx); ok && span != nil {
+		req.Header.Set("traceparent", span.ToW3CHeader())
+	} else if traceHeader, ok := ctx.Value("traceparent").(string); ok && traceHeader != "" {
+		req.Header.Set("traceparent", traceHeader)
+	}
 
 	resp, doErr := c.client.Do(req)
 	if doErr != nil {

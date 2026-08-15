@@ -39,23 +39,40 @@ func InitDB(databaseURL string) {
 		return
 	}
 
-	var err error
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		log.Printf("[Storage] Failed to parse database URL config: %v; operating in file-fallback mode", err)
+		return
+	}
+
+	config.MaxConns = 50
+	config.MinConns = 5
+	config.MaxConnIdleTime = 5 * time.Minute
+	config.MaxConnLifetime = 30 * time.Minute
+	config.HealthCheckPeriod = 1 * time.Minute
+
 	maxRetries := 5
 	backoff := 1 * time.Second
+	var connected bool
 
 	for i := 1; i <= maxRetries; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		Pool, err = pgxpool.New(ctx, databaseURL)
+		p, connErr := pgxpool.NewWithConfig(ctx, config)
 		cancel()
 
-		if err == nil && Pool != nil {
+		if connErr == nil && p != nil {
 			pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			err = Pool.Ping(pingCtx)
+			err = p.Ping(pingCtx)
 			pingCancel()
 			if err == nil {
+				Pool = p
+				connected = true
 				log.Printf("[Storage] Connected to PostgreSQL successfully on attempt %d", i)
 				break
 			}
+			p.Close()
+		} else {
+			err = connErr
 		}
 
 		log.Printf("[Storage] PostgreSQL connection attempt %d/%d failed: %v; retrying in %v...", i, maxRetries, err, backoff)
@@ -63,7 +80,8 @@ func InitDB(databaseURL string) {
 		backoff *= 2
 	}
 
-	if err != nil || Pool == nil {
+	if !connected || Pool == nil {
+		Pool = nil
 		log.Printf("[Storage] Could not connect to PostgreSQL after %d attempts: %v; operating in file-fallback mode", maxRetries, err)
 		return
 	}
@@ -71,6 +89,14 @@ func InitDB(databaseURL string) {
 	if err := InitTables(context.Background()); err != nil {
 		log.Printf("[Storage] PostgreSQL table initialization error: %v; operating in file-fallback mode", err)
 	}
+}
+
+// PingDB checks if the database is accessible, returning nil if operating in fallback mode (Pool == nil).
+func PingDB(ctx context.Context) error {
+	if Pool == nil {
+		return nil
+	}
+	return Pool.Ping(ctx)
 }
 
 func InitTables(ctx context.Context) error {
@@ -376,40 +402,20 @@ func isEXDEV(err error) bool {
 	return false
 }
 
-func copyAndReplace(src, dst string, perm os.FileMode) error {
-	in, err := os.Open(src)
+func writeDirectly(dst string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-
-	dstDir := filepath.Dir(dst)
-	tmpFile, err := os.CreateTemp(dstDir, ".tmp-copy-*")
-	if err != nil {
+	if _, err := f.Write(data); err != nil {
+		f.Close()
 		return err
 	}
-	tmpName := tmpFile.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := io.Copy(tmpFile, in); err != nil {
-		tmpFile.Close()
+	if err := f.Sync(); err != nil {
+		f.Close()
 		return err
 	}
-
-	if err := tmpFile.Sync(); err != nil {
-		tmpFile.Close()
-		return err
-	}
-
-	if err := tmpFile.Close(); err != nil {
-		return err
-	}
-
-	if err := os.Chmod(tmpName, perm); err != nil {
-		return err
-	}
-
-	return os.Rename(tmpName, dst)
+	return f.Close()
 }
 
 func atomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
@@ -445,7 +451,7 @@ func atomicWriteFile(filePath string, data []byte, perm os.FileMode) error {
 
 	if err := os.Rename(tmpName, filePath); err != nil {
 		if isEXDEV(err) {
-			return copyAndReplace(tmpName, filePath, perm)
+			return writeDirectly(filePath, data, perm)
 		}
 		return err
 	}

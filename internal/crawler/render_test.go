@@ -2,6 +2,8 @@ package crawler
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -84,5 +86,39 @@ func TestRenderSPA(t *testing.T) {
 	_, err = badEngine.RenderSPA(ctx, "https://example.com/test")
 	if err == nil {
 		t.Fatalf("Expected error for unsupported engine type, got nil")
+	}
+}
+
+func TestRenderSPA_PlaywrightErrorResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal error in playwright service"))
+	}))
+	defer ts.Close()
+
+	t.Setenv("PLAYWRIGHT_SERVICE_URL", ts.URL)
+
+	engine := NewFallbackRenderEngine("playwright")
+	// Should cleanly close response and fallback to mock content
+	html, err := engine.RenderSPA(context.Background(), "https://example.com/test-spa")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(html, "Rendered Content for https://example.com/test-spa") {
+		t.Errorf("expected fallback mock HTML, got: %s", html)
+	}
+}
+
+func TestRenderSPA_ChromeExplicitFailure(t *testing.T) {
+	t.Setenv("ENABLE_HEADLESS_CHROME", "true")
+	t.Setenv("CHROME_PATH", "/non/existent/chrome/binary/path/12345")
+
+	engine := NewFallbackRenderEngine("chrome")
+	_, err := engine.RenderSPA(context.Background(), "https://example.com/spa")
+	if err == nil {
+		t.Fatalf("Expected explicit error on headless chrome failure when enabled, got nil")
+	}
+	if !strings.Contains(err.Error(), "chrome execution failed") {
+		t.Errorf("Expected 'chrome execution failed' in error message, got: %v", err)
 	}
 }

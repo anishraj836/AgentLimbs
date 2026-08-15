@@ -41,18 +41,48 @@ Most AI agents face a core dilemma when interacting with the web:
 
 ---
 
-## 🌟 Key Capabilities
+## ⚡ Quick Start & Universal CLI
 
-- **🚀 Dual Deployment Modes**: Run as a lightweight, single-binary embedded server (`cmd/agentlimbs-light`) with zero external dependencies (~25MB RAM), or as a distributed 9-microservice event-driven stack via Docker Compose.
-- **🌳 HTML DOM AST Extractor (`internal/extractor`)**: Replaces fragile regex stripping with official Go DOM tree walking (`golang.org/x/net/html`) to convert web pages into clean, token-efficient Markdown (up to **82% token savings** over raw HTML, averaging **5.6x reduction**).
-- **🌐 Live DuckDuckGo Metasearch Engine (`internal/search/metasearch.go`)**: Performs real-time web engine queries, fetches target links concurrently using `errgroup` concurrency, deduplicates inflight queries via `singleflight`, parses DOM into RAG Markdown, and indexes web results on-the-fly into memory.
-- **🤖 DeepSeek Agentic AI Reasoning (`internal/search/agentic.go`)**: Autonomous multi-step RAG pipeline (Query Intent Decomposition → Multi-Source Web & Vector Ingestion → DeepSeek V3/R1 Context Reasoning & Answer Synthesis with inline citations), with automatic deterministic local RAG summary fallback when LLM keys are absent.
-- **🔍 Hybrid RRF Search Engine & Re-ranking (`internal/search`)**: Blends sparse keyword matching (**Okapi BM25**) and dense semantic vector similarity (**Subword 3-gram/4-gram L2 normalized vectors**) using Reciprocal Rank Fusion (\(k=60\)), followed by post-RRF candidate re-ranking via `ComputeKeywordTitleBoostScore` (exact keyword and title frequency boosts).
-- **⚡ Event-Driven Incremental Indexing (`search-service`)**: Replaces \(O(N)\) DB scan index wipes with single-document `IndexDocumentIncrementalByURL` triggered by Kafka `index_updates` events, updating BM25, Trie, and Vector stores incrementally without wiping in-memory state.
-- **⏳ Document Time-To-Live (TTL) & Janitor (`internal/storage`)**: Instant query-time expiration filtering (0ms delay) combined with a background cleanup janitor. Fully environment-configurable via `DEFAULT_TTL_SECONDS` and `JANITOR_INTERVAL`.
-- **🛡️ Anti-Bot Header Profiles & SPA Stepping (`internal/crawler`)**: Rotates modern Chrome 122 `Sec-Ch-Ua` header profiles, implements `FetchWithStepping` with jittered backoff on HTTP 403/401/429, and detects empty JavaScript SPA root containers.
-- **🔌 Native Model Context Protocol (MCP)**: Directly integrates with Antigravity, Cursor, and Claude Desktop via stdio JSON-RPC tool calls (`agent_limbs_scrape`, `agent_limbs_hybrid_search`).
-- **📊 Companion Web Dashboard (`agentlimbs-dashboard`)**: Modern web UI running on `http://localhost:3001` for real-time web scraping, hybrid search testing, agentic reasoning visualization, and metric monitoring.
+Install AgentLimbs via the universal 1-line script or build from source:
+
+```bash
+# 1-Line Universal Installer (macOS & Linux, detects arm64 / amd64 automatically)
+curl -sSfL https://raw.githubusercontent.com/anishraj836/AgentLimbs/main/scripts/install.sh | sh
+
+# Or build from source:
+go build -o agentlimbs ./cmd/agentlimbs-light
+```
+
+### 1-Click AI IDE MCP Setup (Cursor & Claude Desktop)
+Auto-configure your AI editor's Model Context Protocol in **1 second** without editing JSON files:
+
+```bash
+# Auto-configures both Claude Desktop & Cursor IDE:
+agentlimbs init-mcp
+
+# Or preview the configuration snippet:
+agentlimbs init-mcp --stdout
+```
+
+### Terminal Direct Scraping & Search
+Use AgentLimbs directly from your terminal or pipe into standard Unix tools:
+
+```bash
+# Scrape any web page into clean, token-reduced Markdown:
+agentlimbs scrape https://go.dev/doc/tutorial/getting-started
+
+# Scrape and output structured JSON with token savings (perfect for jq):
+agentlimbs scrape https://go.dev -j | jq .
+
+# Hybrid search (BM25 + Dense Vectors + RRF) across locally indexed pages:
+agentlimbs search "goroutine channel concurrency" --top 5
+
+# Seed 1,000+ SDE engineering topics into local memory:
+agentlimbs seed
+
+# Run the background HTTP & MCP API daemon:
+agentlimbs serve --port 8080
+```
 
 ---
 
@@ -518,6 +548,91 @@ AgentLimbs is designed around the **Unix Philosophy for AI Agents**: *Provide a 
   1. **Latency & Cost**: Calling multimodal vision models on 15 figures per paper adds 5–10 seconds of latency and external API token costs to every scrape.
   2. **Zero CGo / Runtime Bloat**: Traditional OCR (Tesseract) requires heavy system C-libraries, breaking the single-binary zero-dependency deployment model.
   3. **Agentic Separation of Concerns**: Consuming agents (such as Claude, GPT-4, or Gemini) already possess world-class vision capabilities. AgentLimbs keeps the ingestion layer blazing fast and lightweight, leaving multimodal image reasoning to the calling agent on demand.
+
+---
+
+## ⚡ High-Scale Performance Benchmark (500,000+ Documents)
+
+AgentLimbs includes dedicated benchmarking suites in `scripts/benchmarks/` to measure ingestion throughput, memory overhead, and search latency across large-scale corpora.
+
+### 500,000-Document Benchmark Results
+
+| Metric | Result | Notes |
+| :--- | :--- | :--- |
+| **Ingestion Throughput** | **93,542 docs/second** | Ingests 500k pages in **5.34 seconds** |
+| **Active Heap Memory** | **1.27 GB RAM** | ~**2.61 KB per document** (postings, trie, 64 shards, vectors) |
+| **p50 Search Latency (Median)** | **2.44 ms** | Sub-3ms hybrid BM25 + Vector + RRF ranking |
+| **p90 Search Latency** | **3.38 ms** | Fast, responsive under load |
+| **p95 Search Latency** | **4.00 ms** | Ultra-consistent percentile bounds |
+| **p99 Search Latency** | **12.80 ms** | Guaranteed sub-15ms tail latency |
+| **Kafka Offset Watermarking** | **1,302,192 msgs/sec** | 500k messages tracked across 8 partitions with 0 data loss |
+
+---
+
+## 🖥️ CPU, Concurrency & Resource Configuration
+
+### Default CPU Behavior
+In all production binaries (`agentlimbs-light`, `agent-service`, `search-service`, `indexer-service`, `mcp-server`), **Go automatically utilizes all available CPU cores on the host machine** (e.g. 8, 16, 32, 64 cores) without artificial caps.
+
+### How to Configure Resource Limits
+
+You can adjust CPU allocation and concurrency dynamically across environments:
+
+#### 1. Via Environment Variable (`GOMAXPROCS`)
+Control the number of operating system threads executing Go code:
+
+```bash
+# Low-impact mode for local laptops / background sidecars:
+GOMAXPROCS=2 ./agentlimbs-light
+
+# High-throughput mode on production servers:
+GOMAXPROCS=16 ./search-service
+```
+
+#### 2. Via Docker Container Limits
+```bash
+docker run -d \
+  --cpus="4.0" \
+  --memory="2g" \
+  -p 8080:8080 \
+  agentlimbs-light:latest
+```
+
+#### 3. Via Kubernetes Pod Resource Limits
+```yaml
+resources:
+  requests:
+    cpu: "2"
+    memory: "1Gi"
+  limits:
+    cpu: "8"
+    memory: "4Gi"
+```
+
+---
+
+## 🏛️ Deployment Architecture: When to Use Which Mode
+
+```mermaid
+graph LR
+    subgraph SingleBinary ["Mode A: Embedded / Sidecar (Recommended)"]
+        L1["agentlimbs-light\n(Single Binary, ~25MB RAM)"]
+        M1["agent-limbs-mcp\n(Cursor / Claude Desktop)"]
+    end
+
+    subgraph Distributed ["Mode B: Distributed Microservices"]
+        A1["agent-service\n(Scraping)"] --> K1[("Kafka Topic")]
+        K1 --> I1["indexer-service\n(Indexing)"]
+        I1 --> S1["search-service\n(Search)"]
+    end
+```
+
+| Dimension | **Single-Binary Mode (`agentlimbs-light` / MCP)** | **Distributed Cluster (`agent` + `indexer` + `search`)** |
+| :--- | :--- | :--- |
+| **Best For** | Cursor / Claude / IDE tool calls, Local RAG, Developer Workstations, Startups (<500k docs) | Enterprise multi-tenant crawling platforms (Tavily/Perplexity-style, >500k docs) |
+| **Operational Overhead** | **Zero** (1 static binary, no Docker, no external services) | **High** (Requires Kafka, PostgreSQL, Redis, 3 services) |
+| **Search Latency** | **< 1 ms** (in-process memory lookup) | **~2–4 ms** (network hop to search-service) |
+| **Dependencies** | None (embedded SQLite/JSON snapshot fallback) | PostgreSQL (`pgxpool`), Kafka (KRaft), Redis |
 
 ---
 

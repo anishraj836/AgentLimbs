@@ -65,6 +65,14 @@ func main() {
 	r.Use(auth.TenantMiddleware)
 	r.Use(api.SecurityMiddleware(execMode, apiKey, rateLimiter))
 
+	r.Get("/health", handler.Health)
+	r.Get("/healthz", handler.Healthz)
+	r.Get("/livez", handler.Livez)
+	r.Get("/readyz", handler.Readyz)
+	r.Get("/v1/health", handler.Health)
+	r.Get("/v1/healthz", handler.Healthz)
+	r.Get("/v1/livez", handler.Livez)
+	r.Get("/v1/readyz", handler.Readyz)
 	r.Post("/v1/scrape", handler.Scrape)
 	r.Get("/v1/scrape", handler.Scrape)
 	r.Post("/v1/extract", handler.Extract)
@@ -82,7 +90,7 @@ func main() {
 	}
 
 	logger.Log.Info("Agent Service listening on port " + port)
-	
+
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           r,
@@ -100,10 +108,10 @@ func main() {
 
 	<-ctx.Done()
 	logger.Log.Info("Shutting down Agent Service gracefully...")
-	
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Log.Error("Agent Service forced to shutdown", zap.Error(err))
 	}

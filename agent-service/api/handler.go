@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/crawler-monorepo/common/kafka"
 	"github.com/crawler-monorepo/common/stemmer"
 	"github.com/crawler-monorepo/common/stopwords"
 	"github.com/crawler-monorepo/common/utils"
@@ -102,8 +104,8 @@ func (rl *RateLimiter) Allow(ip string) bool {
 
 	subnet := getSubnet(ip)
 
-	if len(rl.requests) > 10000 {
-		if rl.subnetReqs[subnet] >= rl.maxSubnetReq {
+	if len(rl.requests) >= 10000 {
+		if _, exists := rl.requests[ip]; !exists {
 			return false
 		}
 	}
@@ -213,6 +215,13 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 				return
 			}
 
+			path := r.URL.Path
+			if path == "/health" || path == "/healthz" || path == "/livez" || path == "/readyz" ||
+				path == "/v1/health" || path == "/v1/healthz" || path == "/v1/livez" || path == "/v1/readyz" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			if r.Method == http.MethodPost || r.Method == http.MethodPut {
 				r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
 			}
@@ -240,7 +249,13 @@ func SecurityMiddleware(mode, apiKey string, limiter *RateLimiter) func(http.Han
 				if clientKey == "" {
 					clientKey = r.URL.Query().Get("api_key")
 				}
-				if clientKey == "" || subtle.ConstantTimeCompare([]byte(clientKey), []byte(apiKey)) != 1 {
+				if clientKey == "" {
+					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header or Authorization Bearer token"}`, http.StatusUnauthorized)
+					return
+				}
+				h1 := sha256.Sum256([]byte(clientKey))
+				h2 := sha256.Sum256([]byte(apiKey))
+				if subtle.ConstantTimeCompare(h1[:], h2[:]) != 1 {
 					http.Error(w, `{"error":"Unauthorized: Invalid or missing X-API-Key header or Authorization Bearer token"}`, http.StatusUnauthorized)
 					return
 				}
@@ -589,5 +604,63 @@ func (h *AgentHandler) Extract(w http.ResponseWriter, r *http.Request) {
 		"url":       result.FinalURL,
 		"title":     title,
 		"extracted": extractedData,
+	})
+}
+
+func (h *AgentHandler) Health(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok","service":"agent"}`))
+}
+
+func (h *AgentHandler) Healthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok","service":"agent"}`))
+}
+
+func (h *AgentHandler) Livez(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"alive","service":"agent"}`))
+}
+
+func (h *AgentHandler) Readyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	checks := make(map[string]string)
+	allHealthy := true
+
+	if err := storage.PingDB(ctx); err != nil {
+		checks["database"] = fmt.Sprintf("error: %v", err)
+		allHealthy = false
+	} else {
+		checks["database"] = "ok"
+	}
+
+	if err := kafka.CheckKafkaReadiness(ctx); err != nil {
+		checks["kafka"] = fmt.Sprintf("error: %v", err)
+		allHealthy = false
+	} else {
+		checks["kafka"] = "ok"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if !allHealthy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "unhealthy",
+			"service": "agent",
+			"checks":  checks,
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ready",
+		"service": "agent",
+		"checks":  checks,
 	})
 }

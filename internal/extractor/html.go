@@ -457,6 +457,9 @@ func processASTTables(n *html.Node, sb *strings.Builder, depth int) {
 			if node == nil || d > 128 {
 				return
 			}
+			if node != n && node.Type == html.ElementNode && strings.ToLower(node.Data) == "table" {
+				return
+			}
 			if node.Type == html.ElementNode {
 				tag := strings.ToLower(node.Data)
 				if tag == "th" {

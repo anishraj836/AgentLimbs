@@ -37,15 +37,15 @@ type RPCError struct {
 }
 
 type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
 	InputSchema ToolSchema `json:"inputSchema"`
 }
 
 type ToolSchema struct {
-	Type       string                 `json:"type"`
-	Properties map[string]Property    `json:"properties"`
-	Required   []string               `json:"required,omitempty"`
+	Type       string              `json:"type"`
+	Properties map[string]Property `json:"properties"`
+	Required   []string            `json:"required,omitempty"`
 }
 
 type Property struct {
@@ -73,11 +73,17 @@ type CallToolResult struct {
 }
 
 func HandleRPCMessage(raw []byte, client *crawler.Client) (respBytes []byte, err error) {
+	var reqID interface{}
 	defer func() {
 		if r := recover(); r != nil {
+			if reqID == nil {
+				respBytes = nil
+				err = nil
+				return
+			}
 			errResp := JSONRPCResponse{
 				JSONRPC: "2.0",
-				ID:      nil,
+				ID:      reqID,
 				Error:   &RPCError{Code: -32603, Message: fmt.Sprintf("Internal error: %v", r)},
 			}
 			respBytes, _ = json.Marshal(errResp)
@@ -85,14 +91,42 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) (respBytes []byte, err
 		}
 	}()
 
-	var req JSONRPCRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
+	var rawReq struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      interface{}     `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &rawReq); err != nil {
 		errResp := JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      nil,
 			Error:   &RPCError{Code: -32700, Message: "Parse error: " + err.Error()},
 		}
 		return json.Marshal(errResp)
+	}
+
+	reqID = rawReq.ID
+
+	if rawReq.Method == "" || rawReq.JSONRPC != "2.0" {
+		errResp := JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      rawReq.ID,
+			Error:   &RPCError{Code: -32600, Message: "Invalid Request: jsonrpc must be '2.0' and method must be non-empty"},
+		}
+		return json.Marshal(errResp)
+	}
+
+	// JSON-RPC 2.0: Server MUST NOT reply to a Notification (valid jsonrpc 2.0, non-empty method, and id is null/missing)
+	if rawReq.ID == nil {
+		return nil, nil
+	}
+
+	req := JSONRPCRequest{
+		JSONRPC: rawReq.JSONRPC,
+		ID:      rawReq.ID,
+		Method:  rawReq.Method,
+		Params:  rawReq.Params,
 	}
 
 	switch req.Method {

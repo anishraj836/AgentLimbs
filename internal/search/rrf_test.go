@@ -1,6 +1,7 @@
 package search
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/crawler-monorepo/internal/index"
@@ -122,10 +123,39 @@ func TestRRFScoreScalingAndNormalization(t *testing.T) {
 	}
 }
 
+func TestReciprocalRankFusion_ZeroAndNegativeVectorSimilarity(t *testing.T) {
+	vectorHits := []index.VectorSearchResult{
+		{DocID: "doc_zero", Similarity: 0.0},
+		{DocID: "doc_neg", Similarity: -0.45},
+	}
+
+	fused := ReciprocalRankFusion("", nil, vectorHits, 5)
+	if len(fused) != 2 {
+		t.Fatalf("Expected 2 fused hits including zero/negative cosine similarity, got %d", len(fused))
+	}
+
+	if fused[0].DocID != "doc_zero" || fused[0].VectorRank == nil || *fused[0].VectorRank != 1 {
+		t.Errorf("Expected doc_zero rank 1 preserved, got: %+v", fused[0])
+	}
+	if fused[1].DocID != "doc_neg" || fused[1].VectorRank == nil || *fused[1].VectorRank != 2 {
+		t.Errorf("Expected doc_neg rank 2 preserved, got: %+v", fused[1])
+	}
+}
+
+func TestReciprocalRankFusion_EmptyResultsJSONSerialization(t *testing.T) {
+	fused := ReciprocalRankFusion("", nil, nil, 5)
+	data, err := json.Marshal(fused)
+	if err != nil {
+		t.Fatalf("Failed to marshal empty fused hits: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Errorf("Expected empty fused hits to serialize as '[]', got %s", string(data))
+	}
+}
+
 func hitScoreDiff(a, b float64) float64 {
 	if a > b {
 		return a - b
 	}
 	return b - a
 }
-

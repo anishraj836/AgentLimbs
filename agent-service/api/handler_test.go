@@ -1,13 +1,14 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
 func TestSecurityMiddlewareAuthAndRateLimiting(t *testing.T) {
-	limiter := NewRateLimiter(5) // Max 5 requests per minute
+	limiter := NewRateLimiter(20) // Max 20 requests per minute
 	apiKey := "test_secret_key_123"
 
 	handler := SecurityMiddleware("local", apiKey, limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +40,32 @@ func TestSecurityMiddlewareAuthAndRateLimiting(t *testing.T) {
 	handler.ServeHTTP(rr3, req3)
 	if rr3.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK with valid API key, got %d", rr3.Code)
+	}
+
+	// 3b. Request with valid Bearer token -> Should return 200 OK
+	req3b := httptest.NewRequest("GET", "/v1/scrape", nil)
+	req3b.Header.Set("Authorization", "Bearer "+apiKey)
+	rr3b := httptest.NewRecorder()
+	handler.ServeHTTP(rr3b, req3b)
+	if rr3b.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with valid Bearer token, got %d", rr3b.Code)
+	}
+
+	// 3c. Request with valid API key in query param -> Should return 200 OK
+	req3c := httptest.NewRequest("GET", "/v1/scrape?api_key="+apiKey, nil)
+	rr3c := httptest.NewRecorder()
+	handler.ServeHTTP(rr3c, req3c)
+	if rr3c.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with valid query param API key, got %d", rr3c.Code)
+	}
+
+	// 3d. Request with wrong length API key -> Should return 401 Unauthorized
+	req3d := httptest.NewRequest("GET", "/v1/scrape", nil)
+	req3d.Header.Set("X-API-Key", "short")
+	rr3d := httptest.NewRecorder()
+	handler.ServeHTTP(rr3d, req3d)
+	if rr3d.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized with wrong length API key, got %d", rr3d.Code)
 	}
 
 	// 4. Cloud mode with blank server apiKey -> Should return 401 Unauthorized for any request
@@ -147,3 +174,75 @@ func TestSecurityMiddlewareIPRateLimiting(t *testing.T) {
 		t.Fatalf("expected 429 Too Many Requests (spoofed header blocked), got %d", rrExceeded.Code)
 	}
 }
+
+func TestAgentHealthEndpoints(t *testing.T) {
+	handler := NewAgentHandler()
+
+	// 1. /health
+	req := httptest.NewRequest("GET", "/health", nil)
+	rr := httptest.NewRecorder()
+	handler.Health(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 from Health, got %d", rr.Code)
+	}
+
+	// 2. /healthz
+	req = httptest.NewRequest("GET", "/healthz", nil)
+	rr = httptest.NewRecorder()
+	handler.Healthz(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 from Healthz, got %d", rr.Code)
+	}
+
+	// 3. /livez
+	req = httptest.NewRequest("GET", "/livez", nil)
+	rr = httptest.NewRecorder()
+	handler.Livez(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 from Livez, got %d", rr.Code)
+	}
+
+	// 4. /readyz
+	req = httptest.NewRequest("GET", "/readyz", nil)
+	rr = httptest.NewRecorder()
+	handler.Readyz(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 from Readyz in default configuration, got %d", rr.Code)
+	}
+
+	// 5. Middleware bypass test: Cloud mode with API key required should still allow /healthz without auth
+	limiter := NewRateLimiter(100)
+	secHandler := SecurityMiddleware("cloud", "secret_key", limiter)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.Healthz(w, r)
+	}))
+
+	reqSec := httptest.NewRequest("GET", "/healthz", nil)
+	rrSec := httptest.NewRecorder()
+	secHandler.ServeHTTP(rrSec, reqSec)
+	if rrSec.Code != http.StatusOK {
+		t.Errorf("expected 200 from /healthz through SecurityMiddleware without API key, got %d", rrSec.Code)
+	}
+}
+
+func TestRateLimiterHardOOMCap(t *testing.T) {
+	limiter := NewRateLimiter(100)
+
+	// Populate rate limiter with 10,000 unique IPs
+	for i := 0; i < 10000; i++ {
+		ip := fmt.Sprintf("10.%d.%d.%d", (i>>16)&0xff, (i>>8)&0xff, i&0xff)
+		limiter.requests[ip] = 1
+	}
+
+	// An existing IP should still be allowed if under limit
+	existingIP := "10.0.0.1"
+	if !limiter.Allow(existingIP) {
+		t.Errorf("expected existing IP %s to be allowed under maxReqs", existingIP)
+	}
+
+	// A new IP not in the map MUST be rejected to prevent map growth OOM
+	newIP := "192.168.1.100"
+	if limiter.Allow(newIP) {
+		t.Errorf("expected new IP %s to be rejected when map size >= 10000", newIP)
+	}
+}
+

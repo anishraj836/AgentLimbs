@@ -164,7 +164,7 @@ func (l *TenantQuotaLimiter) GetTokensUsed(tenantID string) int64 {
 	return l.tokenCounts[tenantID]
 }
 
-// TenantMiddleware extracts JWT or X-Tenant-ID headers and injects TenantContext into r.Context()
+// TenantMiddleware extracts JWT and injects TenantContext into r.Context()
 func TenantMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tenantID := "default_tenant"
@@ -175,26 +175,19 @@ func TenantMiddleware(next http.Handler) http.Handler {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-			parts := strings.Split(tokenStr, ".")
-			if len(parts) == 3 {
-				claims, err := ParseJWT(tokenStr, GetJWTSecret())
-				if err != nil {
-					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set("WWW-Authenticate", `Bearer realm="AgentLimbs"`)
-					w.WriteHeader(http.StatusUnauthorized)
-					_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"Unauthorized: Invalid JWT token: %v"}`, err)))
-					return
-				}
-				if claims.TenantID != "" {
-					tenantID = claims.TenantID
-					planType = claims.PlanType
-					role = claims.Role
-				}
-			} else if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
-				tenantID = headerTenant
+			claims, err := ParseJWT(tokenStr, GetJWTSecret())
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("WWW-Authenticate", `Bearer realm="AgentLimbs"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"Unauthorized: Invalid JWT token: %v"}`, err)))
+				return
 			}
-		} else if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
-			tenantID = headerTenant
+			if claims.TenantID != "" {
+				tenantID = claims.TenantID
+				planType = claims.PlanType
+				role = claims.Role
+			}
 		}
 
 		if planType == "pro" {

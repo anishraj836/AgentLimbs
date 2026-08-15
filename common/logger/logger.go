@@ -14,6 +14,10 @@ func init() {
 }
 
 func InitLogger(env string) {
+	InitLoggerWithOutput(env, "stderr")
+}
+
+func InitLoggerWithOutput(env string, outputPaths ...string) {
 	var config zap.Config
 	if env == "production" {
 		config = zap.NewProductionConfig()
@@ -22,8 +26,12 @@ func InitLogger(env string) {
 		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	}
 
-	// Customize output paths if needed
-	config.OutputPaths = []string{"stdout"}
+	if len(outputPaths) == 0 {
+		config.OutputPaths = []string{"stderr"}
+	} else {
+		config.OutputPaths = outputPaths
+	}
+	config.ErrorOutputPaths = []string{"stderr"}
 
 	var err error
 	Log, err = config.Build()

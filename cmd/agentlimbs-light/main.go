@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,6 +34,7 @@ import (
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
 	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/mcp"
 	"github.com/crawler-monorepo/internal/search"
 	"github.com/crawler-monorepo/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -37,6 +43,7 @@ import (
 )
 
 var (
+	version         = "v1.1.0-devex"
 	saveTriggerChan = make(chan string, 100)
 	saveTriggerOnce sync.Once
 )
@@ -82,6 +89,7 @@ func triggerDebouncedSave(dataDir string) {
 
 type EmbeddedServer struct {
 	httpClient *crawler.Client
+	jobManager *crawler.JobManager
 	dataDir    string
 }
 
@@ -98,8 +106,13 @@ func NewEmbeddedServerWithClient(dataDir string, httpClient *crawler.Client) *Em
 	}
 	return &EmbeddedServer{
 		httpClient: httpClient,
+		jobManager: crawler.NewJobManager(httpClient, dataDir),
 		dataDir:    dataDir,
 	}
+}
+
+func (s *EmbeddedServer) JobManager() *crawler.JobManager {
+	return s.jobManager
 }
 
 func (s *EmbeddedServer) HTTPClient() *crawler.Client {
@@ -231,7 +244,7 @@ func (s *EmbeddedServer) ScrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(ScrapeResponse{
+	_ = json.NewEncoder(w).Encode(ScrapeResponse{
 		URL:           res.FinalURL,
 		Title:         title,
 		Markdown:      mdText,
@@ -247,9 +260,9 @@ type SearchRequest struct {
 }
 
 type SearchResponse struct {
-	Query     string                  `json:"query"`
-	LatencyMs float64                 `json:"latency_ms"`
-	TotalHits int                     `json:"total_hits"`
+	Query     string                   `json:"query"`
+	LatencyMs float64                  `json:"latency_ms"`
+	TotalHits int                      `json:"total_hits"`
 	Results   []search.HybridSearchHit `json:"results"`
 }
 
@@ -262,7 +275,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON request payload"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON request payload"})
 			return
 		}
 	} else {
@@ -284,7 +297,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
 	bm25Hits := index.RankDocuments(
 		req.Query,
-		index.GlobalEngine.Inverted,
+		index.GlobalEngine.GetInvertedIndex(),
 		titles,
 		urls,
 		bodies,
@@ -317,7 +330,7 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(SearchResponse{
+	_ = json.NewEncoder(w).Encode(SearchResponse{
 		Query:     req.Query,
 		LatencyMs: latency,
 		TotalHits: len(fusedHits),
@@ -366,14 +379,14 @@ func (s *EmbeddedServer) AutocompleteHandler(w http.ResponseWriter, r *http.Requ
 		limit = 50
 	}
 
-	results := index.GlobalEngine.Trie.SearchPrefix(q, limit)
+	results := index.GlobalEngine.GetTrie().SearchPrefix(q, limit)
 	if results == nil {
 		results = make([]index.AutocompleteResult, 0)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(AutocompleteResponse{
+	_ = json.NewEncoder(w).Encode(AutocompleteResponse{
 		Prefix:      q,
 		Suggestions: results,
 	})
@@ -406,7 +419,7 @@ func (s *EmbeddedServer) WebSearchHandler(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -414,7 +427,7 @@ func (s *EmbeddedServer) WebSearchHandler(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(SearchResponse{
+	_ = json.NewEncoder(w).Encode(SearchResponse{
 		Query:     req.Query,
 		LatencyMs: latency,
 		TotalHits: len(hits),
@@ -444,13 +457,187 @@ func (s *EmbeddedServer) AgenticSearchHandler(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *EmbeddedServer) CrawlHandler(w http.ResponseWriter, r *http.Request) {
+	var req crawler.CrawlRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body: " + err.Error()})
+		return
+	}
+
+	if req.URL == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "URL parameter required"})
+		return
+	}
+
+	if os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1" {
+		req.AllowLoopback = true
+	}
+
+	job, err := s.jobManager.StartCrawl(r.Context(), req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if req.Async {
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"job_id":  job.ID,
+			"status":  job.GetStatus(),
+			"message": "Crawl job started in background",
+		})
+		return
+	}
+
+	triggerDebouncedSave(s.dataDir)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *EmbeddedServer) GetCrawlJobHandler(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	if jobID == "" {
+		jobID = chi.URLParam(r, "job_id")
+	}
+
+	job, found := s.jobManager.GetJob(jobID)
+	if !found {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Crawl job not found"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (s *EmbeddedServer) CancelCrawlJobHandler(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	if jobID == "" {
+		jobID = chi.URLParam(r, "job_id")
+	}
+
+	cancelled := s.jobManager.CancelJob(jobID)
+	if !cancelled {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Crawl job not found or already completed"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"job_id":  jobID,
+		"status":  "cancelled",
+		"message": "Crawl job cancelled successfully",
+	})
+}
+
+func (s *EmbeddedServer) SchemaExtractHandler(w http.ResponseWriter, r *http.Request) {
+	var req extractor.SchemaExtractRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON request payload"})
+		return
+	}
+
+	if len(req.Schema) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Missing required schema parameter"})
+		return
+	}
+
+	if req.HTML == "" && req.URL == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Either url or html parameter is required"})
+		return
+	}
+
+	htmlContent := req.HTML
+	if htmlContent == "" && req.URL != "" {
+		normURL, err := utils.NormalizeURL(req.URL)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid URL format"})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+
+		fetchURL := utils.TransformGitHubURL(normURL)
+		res, err := s.httpClient.Fetch(ctx, fetchURL)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Failed to fetch target URL: " + err.Error()})
+			return
+		}
+		defer res.Response.Body.Close()
+
+		limitedBody := io.LimitReader(res.Response.Body, 10*1024*1024)
+		bodyBytes, readErr := io.ReadAll(limitedBody)
+		if readErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "Failed to read response body"})
+			return
+		}
+		htmlContent = string(bodyBytes)
+	}
+
+	allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+	var llmProvider search.LLMProvider
+	if req.LLMApiKey != "" || req.LLMBaseURL != "" {
+		if req.LLMBaseURL != "" && strings.Contains(req.LLMBaseURL, "deepseek") {
+			llmProvider = search.NewDeepSeekLLMProvider(req.LLMApiKey, req.LLMBaseURL, req.Model, allowLoopback)
+		} else {
+			llmProvider = search.NewOpenAILLMProvider(req.LLMApiKey, req.LLMBaseURL, req.Model, allowLoopback)
+		}
+	} else {
+		llmProvider = search.NewLLMProviderFromEnv(allowLoopback)
+	}
+
+	result, extractErr := extractor.ExtractStructuredJSON(r.Context(), htmlContent, string(req.Schema), req.Prompt, llmProvider)
+	if extractErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(extractErr.Error(), "schema compilation error") || strings.Contains(extractErr.Error(), "malformed JSON") {
+			w.WriteHeader(http.StatusBadRequest)
+		} else {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": extractErr.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (s *EmbeddedServer) SetupRouter() http.Handler {
@@ -463,7 +650,7 @@ func (s *EmbeddedServer) SetupRouter() http.Handler {
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Tenant-ID, traceparent, X-Request-ID")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusOK)
@@ -487,12 +674,17 @@ func (s *EmbeddedServer) SetupRouter() http.Handler {
 		r.Post("/v1/agentic-search", s.AgenticSearchHandler)
 		r.Get("/v1/agentic-search", s.AgenticSearchHandler)
 		r.Get("/v1/autocomplete", s.AutocompleteHandler)
+
+		// Stage 2 endpoints
+		r.Post("/v1/crawl", s.CrawlHandler)
+		r.Get("/v1/crawl/{id}", s.GetCrawlJobHandler)
+		r.Delete("/v1/crawl/{id}", s.CancelCrawlJobHandler)
+		r.Post("/v1/extract/schema", s.SchemaExtractHandler)
 	})
 
 	return r
 }
 
-// GetJanitorInterval returns the configured janitor interval duration from JANITOR_INTERVAL env (fallback: 15 minutes).
 func GetJanitorInterval() time.Duration {
 	if env := os.Getenv("JANITOR_INTERVAL"); env != "" {
 		if d, err := time.ParseDuration(env); err == nil && d > 0 {
@@ -502,7 +694,7 @@ func GetJanitorInterval() time.Duration {
 	return 15 * time.Minute
 }
 
-func initStorage(dataDir string) {
+func initStorage(ctx context.Context, dataDir string) {
 	if dataDir == "" {
 		dataDir = "data"
 	}
@@ -510,14 +702,14 @@ func initStorage(dataDir string) {
 
 	indexPath := filepath.Join(dataDir, "inverted_index.json")
 	if _, err := os.Stat(indexPath); err == nil {
-		if err := index.GlobalEngine.Inverted.LoadSnapshot(indexPath); err == nil {
+		if err := index.GlobalEngine.GetInvertedIndex().LoadSnapshot(indexPath); err == nil {
 			logger.Log.Info("Loaded inverted index snapshot from file fallback: " + indexPath)
 		}
 	}
 
 	vectorPath := filepath.Join(dataDir, "vector_index.json")
 	if _, err := os.Stat(vectorPath); err == nil {
-		if err := index.GlobalEngine.Vector.LoadSnapshot(vectorPath); err == nil {
+		if err := index.GlobalEngine.GetVectorIndex().LoadSnapshot(vectorPath); err == nil {
 			logger.Log.Info("Loaded vector index snapshot from file fallback: " + vectorPath)
 		}
 	}
@@ -525,23 +717,15 @@ func initStorage(dataDir string) {
 	docs, err := storage.GetCrawledDocuments(context.Background())
 	if err == nil && len(docs) > 0 {
 		for _, d := range docs {
-			rawTokens := strings.Fields(strings.ToLower(d.CleanBody))
-			termPositions := make(map[string][]int)
-			for idx, raw := range rawTokens {
-				clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
-				if clean == "" || stopwords.IsStopword(clean) {
-					continue
-				}
-				stemmed := stemmer.Stem(clean)
-				termPositions[stemmed] = append(termPositions[stemmed], idx)
-			}
-			index.GlobalEngine.IndexDocumentWithSource(d.URL, d.Title, d.CleanBody, termPositions, d.TotalTokens, d.SourceType, d.SourceURL)
+			index.GlobalEngine.IndexDocumentDirectly(d.URL, d.Title, d.CleanBody, d.TotalTokens, d.SourceURL)
 		}
 		logger.Log.Info(fmt.Sprintf("Hydrated %d documents into memory from file fallback", len(docs)))
 	}
 
-	// Start background TTL Janitor routine to purge expired pages on JANITOR_INTERVAL (fallback: 15m)
-	index.GlobalEngine.StartTTLJanitor(context.Background(), GetJanitorInterval())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	index.GlobalEngine.StartTTLJanitor(ctx, GetJanitorInterval())
 }
 
 func saveStorage(dataDir string) {
@@ -551,37 +735,132 @@ func saveStorage(dataDir string) {
 	_ = os.MkdirAll(dataDir, 0755)
 
 	indexPath := filepath.Join(dataDir, "inverted_index.json")
-	_ = index.GlobalEngine.Inverted.SaveSnapshot(indexPath)
+	_ = index.GlobalEngine.GetInvertedIndex().SaveSnapshot(indexPath)
 
 	vectorPath := filepath.Join(dataDir, "vector_index.json")
-	_ = index.GlobalEngine.Vector.SaveSnapshot(vectorPath)
+	_ = index.GlobalEngine.GetVectorIndex().SaveSnapshot(vectorPath)
 }
 
-func main() {
-	logger.InitLogger(os.Getenv("ENV"))
-	defer logger.Sync()
+func loadSnapshotsForCLI(dataDir string) {
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	_ = os.MkdirAll(dataDir, 0755)
 
+	indexPath := filepath.Join(dataDir, "inverted_index.json")
+	if _, err := os.Stat(indexPath); err == nil {
+		_ = index.GlobalEngine.GetInvertedIndex().LoadSnapshot(indexPath)
+	}
+
+	vectorPath := filepath.Join(dataDir, "vector_index.json")
+	if _, err := os.Stat(vectorPath); err == nil {
+		_ = index.GlobalEngine.GetVectorIndex().LoadSnapshot(vectorPath)
+	}
+
+	docs, err := storage.GetCrawledDocuments(context.Background())
+	if err == nil && len(docs) > 0 {
+		for _, d := range docs {
+			index.GlobalEngine.IndexDocumentDirectly(d.URL, d.Title, d.CleanBody, d.TotalTokens, d.SourceURL)
+		}
+	}
+}
+
+func parseInterleavedFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for len(args) > 0 {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) > 0 {
+			positional = append(positional, args[0])
+			args = args[1:]
+		}
+	}
+	return positional, nil
+}
+
+func printHelp() {
+	helpText := fmt.Sprintf(`AgentLimbs CLI (%s) — High-Performance RAG Web Crawler & Hybrid Search Engine
+
+Usage:
+  agentlimbs <subcommand> [flags]
+
+Available Subcommands:
+  serve                               Run HTTP REST API server or stdio MCP server (Default)
+  scrape <url>                        Direct DOM AST extraction to Markdown / JSON
+  crawl <url>                         Recursive whole-domain BFS crawling and indexing
+  extract <url> --schema <file.json>  Schema-guided structured LLM extraction
+  search "<query>"                    Hybrid BM25 + Vector + RRF search from local index
+  init-mcp                            1-Click AI IDE auto-configurator (Claude Desktop & Cursor)
+  seed                                Seed 1,000+ SDE technical documents into local index
+  version                             Display current AgentLimbs version
+
+Examples:
+  agentlimbs                                            # Starts HTTP API daemon on :8080
+  agentlimbs serve --port 9090                          # Starts HTTP server on port 9090
+  agentlimbs serve --mcp                                # Starts stdio Model Context Protocol server
+  agentlimbs scrape https://go.dev -j                   # Scrapes URL and prints structured JSON
+  agentlimbs crawl https://docs.docker.com --depth 2    # Crawls domain up to depth 2
+  agentlimbs extract https://example.com --schema s.json# Structured JSON extraction with schema
+  agentlimbs search "GMP Scheduler"                     # Searches local indexed documents
+  agentlimbs init-mcp                                   # Configures Claude Desktop & Cursor MCP JSON
+  agentlimbs seed                                       # Seeds 1,000+ technical documents
+
+Run 'agentlimbs <subcommand> --help' for details on each subcommand.
+`, version)
+	fmt.Fprint(os.Stderr, helpText)
+}
+
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	port := fs.String("port", "", "HTTP port to bind (default 8080 or PORT env)")
+	fs.StringVar(port, "p", "", "HTTP port to bind (shorthand)")
+	dataDir := fs.String("data-dir", "", "Data directory for snapshots (default 'data' or DATA_DIR env)")
+	fs.StringVar(dataDir, "d", "", "Data directory (shorthand)")
+	mcpMode := fs.Bool("mcp", false, "Start in stdio MCP server mode")
+	_ = fs.Bool("readonly", false, "Start in readonly mode")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if *port == "" {
+		*port = os.Getenv("PORT")
+		if *port == "" {
+			*port = "8080"
+		}
+	}
+
+	if *dataDir == "" {
+		*dataDir = os.Getenv("DATA_DIR")
+		if *dataDir == "" {
+			*dataDir = "data"
+		}
+	}
+
+	if *mcpMode {
+		runStdioMCP(*dataDir)
+		return
+	}
+
+	// Validate config for HTTP server
 	if _, err := config.LoadAndValidate(); err != nil {
 		logger.Log.Fatal("Configuration validation error", zap.Error(err))
 	}
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
 
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "data"
-	}
+	initStorage(rootCtx, *dataDir)
 
-	initStorage(dataDir)
-
-	server := NewEmbeddedServer(dataDir)
+	server := NewEmbeddedServer(*dataDir)
 	router := server.SetupRouter()
 
 	httpServer := &http.Server{
-		Addr:              ":" + port,
+		Addr:              ":" + *port,
 		Handler:           router,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -589,7 +868,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.Log.Info("AgentLimbs Light Single-Binary Server starting on port " + port)
+	logger.Log.Info("AgentLimbs Light Single-Binary Server starting on port " + *port)
 
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -602,9 +881,999 @@ func main() {
 	<-stop
 
 	logger.Log.Info("Shutting down server gracefully...")
+	rootCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {
 		logger.Log.Error("Server forced to shutdown", zap.Error(err))
+	}
+
+	saveStorage(*dataDir)
+}
+
+const maxLineSize = 10 * 1024 * 1024
+
+var errLineTooLong = errors.New("line length exceeded 10MB")
+
+func readBoundedLine(reader *bufio.Reader, maxBytes int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			if len(line) == 0 && len(chunk) == 0 {
+				return nil, err
+			}
+			if len(line)+len(chunk) > maxBytes {
+				return nil, errLineTooLong
+			}
+			line = append(line, chunk...)
+			return line, nil
+		}
+		if len(line)+len(chunk) > maxBytes {
+			for isPrefix && err == nil {
+				_, isPrefix, err = reader.ReadLine()
+			}
+			return nil, errLineTooLong
+		}
+		line = append(line, chunk...)
+		if !isPrefix {
+			break
+		}
+	}
+	return line, nil
+}
+
+func runStdioMCP(dataDir string) {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	initStorage(ctx, dataDir)
+	defer saveStorage(dataDir)
+
+	client := crawler.NewClient()
+	reader := bufio.NewReaderSize(os.Stdin, 64*1024)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		line, err := readBoundedLine(reader, maxLineSize)
+		if err != nil {
+			if errors.Is(err, errLineTooLong) {
+				errResp := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      nil,
+					"error": map[string]interface{}{
+						"code":    -32700,
+						"message": "Parse error: line length exceeded 10MB",
+					},
+				}
+				if respBytes, marshalErr := json.Marshal(errResp); marshalErr == nil {
+					fmt.Println(string(respBytes))
+				}
+				continue
+			}
+			if errors.Is(err, io.EOF) || err == io.EOF {
+				break
+			}
+			break
+		}
+
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		var rawMessage json.RawMessage
+		if unmarshalErr := json.Unmarshal(trimmed, &rawMessage); unmarshalErr != nil {
+			errResp := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      nil,
+				"error": map[string]interface{}{
+					"code":    -32700,
+					"message": "Parse error: " + unmarshalErr.Error(),
+				},
+			}
+			if respBytes, marshalErr := json.Marshal(errResp); marshalErr == nil {
+				fmt.Println(string(respBytes))
+			}
+			continue
+		}
+
+		if len(rawMessage) == 0 {
+			continue
+		}
+
+		respBytes, rpcErr := mcp.HandleRPCMessage(rawMessage, client)
+		if rpcErr != nil {
+			continue
+		}
+
+		if len(respBytes) > 0 {
+			fmt.Println(string(respBytes))
+		}
+	}
+}
+
+type ScrapeCLIOutput struct {
+	URL        string  `json:"url"`
+	Title      string  `json:"title"`
+	Markdown   string  `json:"markdown"`
+	Tokens     int     `json:"tokens"`
+	RawTokens  int     `json:"raw_tokens"`
+	SavingsPct float64 `json:"savings_pct"`
+}
+
+func runScrape(args []string) {
+	allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+	client := crawler.NewTestClient(allowLoopback)
+	runScrapeWithClient(client, args)
+}
+
+func runScrapeWithClient(client *crawler.Client, args []string) {
+	fs := flag.NewFlagSet("scrape", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	mode := fs.String("mode", "clean_rag", "Extraction mode (clean_rag, preserve_links, raw)")
+	fs.StringVar(mode, "m", "clean_rag", "Extraction mode (shorthand)")
+	jsonOut := fs.Bool("json", false, "Output structured JSON payload")
+	fs.BoolVar(jsonOut, "j", false, "Output structured JSON (shorthand)")
+	outFile := fs.String("out", "", "Save extracted markdown to a file")
+	fs.StringVar(outFile, "o", "", "Save markdown to file (shorthand)")
+	ttl := fs.Int("ttl", 604800, "Time-to-live expiration for indexing in seconds (default: 7 days)")
+	noIndex := fs.Bool("no-index", false, "Skip indexing into local database")
+	dataDir := fs.String("data-dir", "data", "Snapshot data directory")
+	fs.StringVar(dataDir, "d", "data", "Snapshot data directory (shorthand)")
+
+	posArgs, err := parseInterleavedFlags(fs, args)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	if len(posArgs) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: Missing target URL.")
+		fmt.Fprintln(os.Stderr, "Usage: agentlimbs scrape <url> [flags]")
+		fmt.Fprintln(os.Stderr, "Flags:")
+		fmt.Fprintln(os.Stderr, "  -m, --mode <mode>       Extraction mode (clean_rag, preserve_links, raw) [default: clean_rag]")
+		fmt.Fprintln(os.Stderr, "  -j, --json              Output structured JSON payload")
+		fmt.Fprintln(os.Stderr, "  -o, --out <path>        Save markdown directly to a file")
+		fmt.Fprintln(os.Stderr, "      --ttl <seconds>     Time-to-live in seconds [default: 604800 / 7 days]")
+		fmt.Fprintln(os.Stderr, "      --no-index          Skip persisting to local search index")
+		fmt.Fprintln(os.Stderr, "  -d, --data-dir <dir>    Snapshot storage directory [default: data]")
+		os.Exit(1)
+	}
+
+	rawURL := posArgs[0]
+	normURL, err := utils.NormalizeURL(rawURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Invalid URL format %q: %v\n", rawURL, err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	fetchURL := utils.TransformGitHubURL(normURL)
+	if client == nil {
+		allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+		client = crawler.NewTestClient(allowLoopback)
+	}
+	res, err := client.Fetch(ctx, fetchURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Failed to fetch %s: %v\n", fetchURL, err)
+		os.Exit(1)
+	}
+	defer res.Response.Body.Close()
+
+	if res.Response.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "Error: HTTP %d (%s) returned by %s\n", res.Response.StatusCode, res.Response.Status, res.FinalURL)
+		os.Exit(1)
+	}
+
+	limitedBody := io.LimitReader(res.Response.Body, 10*1024*1024)
+	htmlBytes, err := io.ReadAll(limitedBody)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Failed to read response body: %v\n", err)
+		os.Exit(1)
+	}
+
+	contentType := res.Response.Header.Get("Content-Type")
+	mdText, tokens, title, extractErr := extractor.ExtractDocumentText(res.FinalURL, contentType, htmlBytes, *mode)
+	if extractErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: Extraction failed: %v\n", extractErr)
+		os.Exit(1)
+	}
+
+	rawTokens := len(strings.Fields(string(htmlBytes)))
+	savingsPct := 0.0
+	if rawTokens > 0 {
+		savingsPct = float64(rawTokens-tokens) / float64(rawTokens) * 100.0
+	}
+	if savingsPct < 0 {
+		savingsPct = 0
+	}
+
+	if !*noIndex {
+		loadSnapshotsForCLI(*dataDir)
+
+		bodyForIndexing := mdText
+		docTitle := title
+		if cleanDoc, _ := extractor.ProcessRawHTML(res.FinalURL, htmlBytes); cleanDoc != nil && cleanDoc.Body != "" {
+			bodyForIndexing = cleanDoc.Body
+			if cleanDoc.Title != "" {
+				docTitle = cleanDoc.Title
+			}
+		}
+
+		rawToks := strings.Fields(strings.ToLower(bodyForIndexing))
+		termPositions := make(map[string][]int)
+		for idx, raw := range rawToks {
+			clean := strings.Trim(raw, ".,!?:;\"'()[]{}")
+			if clean == "" || stopwords.IsStopword(clean) {
+				continue
+			}
+			stemmed := stemmer.Stem(clean)
+			termPositions[stemmed] = append(termPositions[stemmed], idx)
+		}
+
+		index.GlobalEngine.IndexDocumentWithSource(res.FinalURL, docTitle, bodyForIndexing, termPositions, tokens, "cli_scraped", res.FinalURL)
+
+		if ttlDuration, hasTTL := api.ClampTTL(*ttl); hasTTL {
+			_ = storage.SaveCrawledDocumentWithTTL(
+				context.Background(),
+				res.FinalURL,
+				docTitle,
+				bodyForIndexing,
+				tokens,
+				"cli_scraped",
+				res.FinalURL,
+				ttlDuration,
+			)
+		} else {
+			_ = storage.SaveCrawledDocument(
+				context.Background(),
+				res.FinalURL,
+				docTitle,
+				bodyForIndexing,
+				tokens,
+				"cli_scraped",
+				res.FinalURL,
+			)
+		}
+
+		saveStorage(*dataDir)
+	}
+
+	if *outFile != "" {
+		if err := os.WriteFile(*outFile, []byte(mdText), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: Failed to write to %s: %v\n", *outFile, err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Extracted markdown saved to %s\n", *outFile)
+	}
+
+	if *jsonOut {
+		payload := ScrapeCLIOutput{
+			URL:        res.FinalURL,
+			Title:      title,
+			Markdown:   mdText,
+			Tokens:     tokens,
+			RawTokens:  rawTokens,
+			SavingsPct: math.Round(savingsPct*10) / 10,
+		}
+		jsonBytes, _ := json.MarshalIndent(payload, "", "  ")
+		fmt.Println(string(jsonBytes))
+	} else if *outFile == "" {
+		fmt.Println(mdText)
+	}
+}
+
+func runSearch(args []string) {
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	topK := fs.Int("top", 5, "Maximum results count")
+	fs.IntVar(topK, "k", 5, "Maximum results count (shorthand)")
+	mode := fs.String("mode", "hybrid", "Search mode (hybrid, bm25, vector)")
+	dataDir := fs.String("data-dir", "data", "Snapshot data directory")
+	fs.StringVar(dataDir, "d", "data", "Snapshot data directory (shorthand)")
+	jsonOut := fs.Bool("json", false, "Output results as raw JSON array")
+	fs.BoolVar(jsonOut, "j", false, "Output results as raw JSON array (shorthand)")
+	snippetLen := fs.Int("snippet-len", 180, "Highlight snippet length")
+
+	posArgs, err := parseInterleavedFlags(fs, args)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	if len(posArgs) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: Missing search query.")
+		fmt.Fprintln(os.Stderr, "Usage: agentlimbs search \"<query>\" [flags]")
+		fmt.Fprintln(os.Stderr, "Flags:")
+		fmt.Fprintln(os.Stderr, "  -k, --top <num>         Maximum results count [default: 5]")
+		fmt.Fprintln(os.Stderr, "      --mode <mode>       Search mode (hybrid, bm25, vector) [default: hybrid]")
+		fmt.Fprintln(os.Stderr, "  -j, --json              Output results as JSON array")
+		fmt.Fprintln(os.Stderr, "  -d, --data-dir <dir>    Snapshot storage directory [default: data]")
+		fmt.Fprintln(os.Stderr, "      --snippet-len <num> Snippet highlight length [default: 180]")
+		os.Exit(1)
+	}
+
+	query := strings.Join(posArgs, " ")
+	loadSnapshotsForCLI(*dataDir)
+
+	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
+	if len(titles) == 0 {
+		if *jsonOut {
+			fmt.Println("[]")
+		} else {
+			fmt.Fprintf(os.Stderr, "No indexed documents found in '%s'. Scrape web pages or run 'agentlimbs seed' first.\n", *dataDir)
+		}
+		return
+	}
+
+	if *topK <= 0 {
+		*topK = 5
+	}
+	fetchK := *topK * 2
+	if fetchK < 10 {
+		fetchK = 10
+	}
+
+	bm25Hits := index.RankDocuments(
+		query,
+		index.GlobalEngine.GetInvertedIndex(),
+		titles,
+		urls,
+		bodies,
+		fetchK,
+	)
+
+	vecHits := index.GlobalEngine.SearchVector(query, fetchK)
+
+	fusedHits := search.ReciprocalRankFusion(query, bm25Hits, vecHits, *topK, titles, urls, bodies)
+
+	if *mode == "bm25" {
+		var filtered []search.HybridSearchHit
+		for _, h := range fusedHits {
+			if h.BM25Rank != nil && *h.BM25Rank > 0 {
+				filtered = append(filtered, h)
+			}
+		}
+		fusedHits = filtered
+	} else if *mode == "vector" {
+		var filtered []search.HybridSearchHit
+		for _, h := range fusedHits {
+			if h.VectorRank != nil && *h.VectorRank > 0 {
+				filtered = append(filtered, h)
+			}
+		}
+		fusedHits = filtered
+	}
+
+	if *snippetLen > 0 {
+		for i := range fusedHits {
+			if len(fusedHits[i].Snippet) > *snippetLen {
+				fusedHits[i].Snippet = fusedHits[i].Snippet[:*snippetLen] + "..."
+			}
+		}
+	}
+
+	if *jsonOut {
+		if fusedHits == nil {
+			fusedHits = []search.HybridSearchHit{}
+		}
+		resJSON, _ := json.MarshalIndent(fusedHits, "", "  ")
+		fmt.Println(string(resJSON))
+		return
+	}
+
+	if len(fusedHits) == 0 {
+		fmt.Printf("No matching documents found for query %q.\n", query)
+		return
+	}
+
+	fmt.Printf("🔍 Found %d result(s) for query %q:\n\n", len(fusedHits), query)
+	for i, hit := range fusedHits {
+		fmt.Printf("[%d] %s\n", i+1, hit.Title)
+		fmt.Printf("    URL:   %s\n", hit.URL)
+		fmt.Printf("    Score: %.6f\n", hit.RRFScore)
+		if hit.Snippet != "" {
+			fmt.Printf("    Text:  %s\n", hit.Snippet)
+		}
+		fmt.Println()
+	}
+}
+
+func runInitMCP(args []string) {
+	fs := flag.NewFlagSet("init-mcp", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	editor := fs.String("editor", "all", "Target editor (all, cursor, claude)")
+	fs.StringVar(editor, "e", "all", "Target editor (shorthand)")
+	binPath := fs.String("binary-path", "", "Explicit agentlimbs binary path override")
+	fs.StringVar(binPath, "b", "", "Binary path override (shorthand)")
+	dryRun := fs.Bool("dry-run", false, "Preview JSON diffs without writing to disk")
+	stdout := fs.Bool("stdout", false, "Print MCP server config block to stdout")
+	global := fs.Bool("global", false, "Configure Cursor globally (~/.cursor/mcp.json)")
+	workspace := fs.Bool("workspace", false, "Configure Cursor for current workspace (.cursor/mcp.json)")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	opts := mcp.ConfigOptions{
+		Editor:     *editor,
+		BinaryPath: *binPath,
+		DryRun:     *dryRun,
+		Stdout:     *stdout,
+		Global:     *global,
+		Workspace:  *workspace,
+	}
+
+	res, err := mcp.ConfigureMCP(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: MCP configuration failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *stdout {
+		fmt.Println(res.StdoutJSON)
+		return
+	}
+
+	if *dryRun {
+		fmt.Fprintln(os.Stderr, "🔍 Dry-Run Mode: Showing proposed MCP configurations without modifying files:")
+		for path, diff := range res.DryRunDiffs {
+			fmt.Fprintf(os.Stderr, "\n📄 Target File: %s\n%s\n", path, diff)
+		}
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, "🚀 AgentLimbs 1-Click MCP Auto-Configurator")
+	fmt.Fprintf(os.Stderr, "   Executable Path: %s\n", res.ResolvedBinaryPath)
+	if len(res.FilesCreated) > 0 {
+		for _, f := range res.FilesCreated {
+			fmt.Fprintf(os.Stderr, "   ✅ Created: %s\n", f)
+		}
+	}
+	if len(res.FilesUpdated) > 0 {
+		for _, f := range res.FilesUpdated {
+			fmt.Fprintf(os.Stderr, "   ✅ Updated: %s\n", f)
+		}
+	}
+	if len(res.BackupsCreated) > 0 {
+		for _, b := range res.BackupsCreated {
+			fmt.Fprintf(os.Stderr, "   📦 Backup:  %s\n", b)
+		}
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(os.Stderr, "   ⚠️ Warning: %s\n", w)
+	}
+	fmt.Fprintln(os.Stderr, "\n✨ AI IDE MCP server configuration complete! Restart Claude Desktop or reload Cursor IDE.")
+}
+
+type SDEDomain struct {
+	Category string
+	Topics   []string
+}
+
+func runSeed(args []string) {
+	fs := flag.NewFlagSet("seed", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	dataDir := fs.String("data-dir", "data", "Snapshot data directory")
+	fs.StringVar(dataDir, "d", "data", "Snapshot data directory (shorthand)")
+	quiet := fs.Bool("quiet", false, "Suppress progress output")
+	fs.BoolVar(quiet, "q", false, "Quiet mode (shorthand)")
+
+	limit := fs.Int("limit", 0, "Limit number of seeded documents (0 for all)")
+	fs.IntVar(limit, "l", 0, "Limit number of seeded documents (shorthand)")
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if !*quiet {
+		fmt.Fprintln(os.Stderr, "🚀 Seeding SDE Technical Corpus into local index...")
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	domains := []SDEDomain{
+		{
+			Category: "Data Structures & Algorithms",
+			Topics: []string{
+				"Dynamic Programming Memoization", "Red-Black Tree Self Balancing", "Trie Prefix Tree Autocomplete",
+				"Segment Tree Range Query", "Disjoint Set Union Find Path Compression", "Monotonic Stack Next Greater Element",
+				"Sliding Window Maximum", "Fenwick Tree Binary Indexed Tree", "A Star Pathfinding Algorithm", "Dijkstra Shortest Path Single Source",
+				"Floyd Warshall All Pairs Shortest Path", "Tarjan Strongly Connected Components", "Kruskal Minimum Spanning Tree",
+				"Prim Minimum Spanning Tree", "Topological Sort Directed Acyclic Graph", "KMP Knuth Morris Pratt String Matching",
+				"Rabin Karp Rolling Hash Search", "B Tree Storage Node Balancing", "B Plus Tree Leaf Linked List", "AVL Tree Height Balance",
+				"Skip List Concurrent Skip List", "LRU Cache Least Recently Used Doubly Linked List", "LFU Cache Least Frequently Used",
+				"Hash Map Collision Resolution Chaining Open Addressing", "Bloom Filter Probabilistic Set Membership",
+				"Count Min Sketch Frequency Estimation", "HyperLogLog Cardinality Estimation", "Spatial Index R Tree QuadTree",
+				"Suffix Tree Suffix Array", "QuickSort Partitioning Median of Three", "MergeSort Stable Counting Inversions",
+				"HeapSort Priority Queue Binary Heap", "Radix Sort LSD MSD Counting", "Bucket Sort Distribution",
+				"Binary Search Lower Bound Upper Bound", "Ternary Search Unimodal Function", "Two Pointers Opposite Direction Same Direction",
+				"Backtracking N Queens Sudoku Solver", "Greedy Algorithm Fractional Knapsack", "Branch and Bound Traveling Salesperson",
+			},
+		},
+		{
+			Category: "System Design & Distributed Systems",
+			Topics: []string{
+				"Consistent Hashing Virtual Nodes Ring", "CAP Theorem Consistency Availability Partition Tolerance",
+				"Raft Consensus Protocol Leader Election Log Replication", "Paxos Distributed Consensus Protocol",
+				"Vector Clocks Causal Ordering Logical Time", "Rate Limiter Token Bucket Leaky Bucket Fixed Window",
+				"Distributed Locking Redis Redlock Zookeeper", "Message Broker Apache Kafka Consumer Groups Partitions",
+				"Circuit Breaker Pattern State Transition Retry Exponential Backoff", "Event Sourcing CQRS Command Query Responsibility Segregation",
+				"Distributed Tracing OpenTelemetry Jaeger Context Propagation", "API Gateway Reverse Proxy Nginx Envoy Routing",
+				"Distributed Transaction Two Phase Commit 2PC Saga Pattern", "Distributed Cache Redis Cluster Eviction Policies",
+				"Load Balancer Round Robin Weighted Least Connections", "Database Sharding Horizontal Partitioning Key Hash",
+				"Read Replicas Master Slave Replication Lag", "Heartbeat Liveness Health Checks Failure Detection", "Gossip Protocol Cluster Membership SWIM",
+				"Idempotency Key Deduplication Replay Protection", "Bulkhead Isolation Thread Pool Separation",
+				"Write Through Cache Write Back Cache Write Around", "CDN Content Delivery Network Edge Caching Anycast",
+				"Distributed File System HDFS Ceph Blob Storage", "Service Discovery Consul Eureka DNS Based",
+				"SLA SLO SLI Service Level Agreement Availability Metrics", "Log Aggregation ELK Stack Fluentd Loki",
+				"Database Connection Pooling PgBouncer HikariCP", "Distributed ID Generator Snowflake UUID ULID",
+				"Graceful Degradation Fallback Response Rate Throttling",
+			},
+		},
+		{
+			Category: "Databases & Storage Engines",
+			Topics: []string{
+				"LSM Tree Log Structured Merge Tree SSTable MemTable", "B Plus Tree Storage Engine InnoDB WiredTiger",
+				"WAL Write Ahead Logging Crash Recovery Journaling", "MVCC Multi Version Concurrency Control Snapshot Isolation",
+				"PostgreSQL Indexing BTree GIN GiST BRIN Indexes", "Database Isolation Levels Read Uncommitted Read Committed Repeatable Read Serializable",
+				"ACID Transactions Atomicity Consistency Isolation Durability", "Database Sharding Range Hash Directory Based",
+				"Redis In Memory Data Structures Hash Set Sorted Set Bitmap", "NoSQL Document Store MongoDB Cassandra Key Value",
+				"Graph Database Neo4j Cypher Property Graph", "Columnar Database ClickHouse Apache Parquet OLAP Analytics",
+				"Query Optimization EXPLAIN ANALYZE Cost Based Optimizer", "Database Locking Shared Lock Exclusive Lock Intent Locks Row Level",
+				"Deadlock Detection Lock Wait Timeout Wait For Graph", "Vector Database HNSW Faiss Milvus Embeddings",
+				"Connection Pooling Max Open Connections Max Idle Lifetime", "Database Migration Schema Versioning Liquibase Flyway",
+				"Replication Sync Async Semi Sync Replication", "CDC Change Data Capture Debezium Event Streaming",
+			},
+		},
+		{
+			Category: "Operating Systems & Low-Level Engineering",
+			Topics: []string{
+				"Process vs Thread Memory Layout Heap Stack Text Data", "Context Switching CPU Registers Translation Lookaside Buffer TLB",
+				"Page Replacement Algorithms LRU Clock Second Chance FIFO", "Virtual Memory Page Tables Paging Segmentation Page Fault",
+				"Inodes File Descriptors VFS Virtual File System", "Memory Allocator malloc free jemalloc tcmalloc Slab Allocator",
+				"Mutex Semaphore Condition Variable Spinlock Mutex Contention", "Futex Fast Userspace Mutex Linux Kernel Locking",
+				"Inter Process Communication Shared Memory Pipe Unix Domain Socket Signal", "Non Blocking IO epoll kqueue IO Multiplexing Select Poll",
+				"Asynchronous IO io_uring Ring Buffers Completion Queue", "Linux System Calls sys_enter sys_exit Kernel Mode User Mode",
+				"CPU Cache Lines L1 L2 L3 Cache False Sharing Cache Coherence MESI", "Zero Copy I O sendfile splice DMA Direct Memory Access",
+				"Signal Handling SIGTERM SIGKILL SIGSEGV Signal Masks", "Cgroups v2 Resource Limits CPU Memory IO Quotas",
+				"Namespaces PID Mount Network UTS IPC User Container Isolation", "Thread Synchronization Memory Barrier Atomic Load Store Acquire Release",
+				"Process Scheduling O(1) Scheduler Completely Fair Scheduler CFS", "Memory Mapped Files mmap msync Page Cache Sync",
+			},
+		},
+		{
+			Category: "Networking & Distributed Protocols",
+			Topics: []string{
+				"TCP Three Way Handshake SYN SYN ACK ACK Congestion Control", "HTTP 2 Multiplexing Server Push Binary Framing Header Compression",
+				"HTTP 3 QUIC Protocol UDP Fast Handshake Connection Migration", "TLS 1.3 Handshake Key Exchange Forward Secrecy Cipher Suites",
+				"DNS Resolution Recursive Iterative A AAAA CNAME MX Records", "BGP Border Gateway Protocol Autonomous Systems Path Vector",
+				"Subnetting CIDR IPv4 IPv6 Routing Tables Default Gateway", "Socket Programming Non Blocking Sockets epoll kqueue Event Loop",
+				"WebSockets Full Duplex Bidirectional Upgrade Handshake", "gRPC Protocol Buffers HTTP 2 Streaming RPC Serialization",
+				"NAT Network Address Translation STUN TURN ICE Hole Punching", "UDP Datagram Connectionless Low Latency Packet Loss",
+				"TCP Window Size Sliding Window Window Scaling Flow Control", "SSL TLS Certificates CA Public Key Infrastructure PKI",
+				"Reverse Proxy Nginx Proxy Pass Host Header Buffering", "ALPN Application Layer Protocol Negotiation TLS Extension",
+				"Keep Alive Persistent Connections Connection Reuse Timeout", "CORS Cross Origin Resource Sharing Preflight Flight Headers",
+				"SSRF Server Side Request Forgery Defense Egress Filtering", "Load Balancing Layer 4 TCP vs Layer 7 HTTP Reverse Proxying",
+			},
+		},
+		{
+			Category: "Go Engineering & Concurrency Systems",
+			Topics: []string{
+				"Go GMP Scheduler Goroutine M OS Thread P Processor Work Stealing", "Go Channels Buffered Unbuffered Select Case Deadlock Detection",
+				"Go Garbage Collector Concurrent Mark Sweep Tri Color Abstraction", "Go Memory Management Small Large Allocations Span Arena mcache mcentral",
+				"Go Mutex sync.Mutex sync.RWMutex Starvation Mode Normal Mode", "Go Atomic Operations sync/atomic CompareAndSwap Memory Ordering",
+				"Go Escape Analysis Stack vs Heap Allocation Pointer Indirection", "Go Interface Dispatch Interface Table itab Dynamic Method Calls",
+				"Go Context Cancellation Timeout Deadline Values Propagation", "Go Singleflight Coalescing Concurrent Duplicate Calls",
+				"Go Sync Pool Reuse Garbage Collector Impact Memory Recycling", "Go Slices Header Pointer Length Capacity Resizing Growth",
+				"Go Maps Hash Table Bucket Overflow Buckets Eviction Rehash", "Go Defer Statement Performance Cost Return Values Modification",
+				"Go Error Handling Panic Recover Custom Error Wrapping", "Go Reflection reflect.Type reflect.Value Performance Impact",
+				"Go Generics Type Parameters Type Constraints Performance Compiler", "Go Testing Benchmarks Allocations Profiling pprof",
+				"Go Modules go.mod Direct Indirect Dependencies Vendor", "Go Build Tags Conditional Compilation Cross Compilation GOOS GOARCH",
+			},
+		},
+		{
+			Category: "Cloud Infrastructure, Kubernetes & DevOps",
+			Topics: []string{
+				"Kubernetes Pod Scheduling Affinity Anti Affinity NodeSelector Taints Tolerations", "Docker Container Namespaces Cgroups OverlayFS Image Layers",
+				"Kafka Partitioning Key Hashing Log Segment Offsets Consumer Groups", "Redis Cluster Hash Slots Sharding Resharding Failover Sentinel",
+				"Prometheus Metrics Counter Gauge Histogram Summary Scrape Targets", "Grafana Dashboard Visualization Alerting Metrics Observability",
+				"Terraform Infrastructure as Code Provider State File HCL Declarative", "Envoy Proxy Service Mesh Sidecar mTLS Traffic Splitting Filter Chain", "CI CD Pipeline Github Actions Jenkins GitLab CI Docker Build Test Deploy",
+				"Horizontal Pod Autoscaler HPA Metrics Server CPU Memory Custom Metrics", "Helm Chart Templates Values Release Rollback Package Manager",
+				"Ingress Controller Nginx Traefik Routing Host Rules TLS Termination", "Container Registry Docker Hub ECR GCR Artifact Registry Scans",
+				"StatefulSet Persistent Volume Claim PVC Dynamic Provisioning", "Service ClusterIP NodePort LoadBalancer Headless Service",
+				"Network Policy Calico Flannel Pod to Pod Egress Ingress Rules", "Chaos Engineering Litmus Chaos Monkey Resiliency Testing",
+				"Zero Downtime Deployment Rolling Update Blue Green Canary Release", "Secret Management Vault Kubernetes Secrets Sealed Secrets KMS",
+				"Log Aggregation Vector Fluentbit ElasticSearch Kibana OpenSearch",
+			},
+		},
+		{
+			Category: "Object-Oriented Design & System Patterns",
+			Topics: []string{
+				"SOLID Principles Single Responsibility Open Closed Liskov Interface Segregation Dependency Inversion",
+				"Factory Pattern Abstract Factory Object Instantiation Encapsulation", "Strategy Pattern Interface Interchangeable Algorithms Runtime Swap",
+				"Observer Pattern Event Driven Publisher Subscriber Listener", "Decorator Pattern Dynamic Behavior Composition Wrapper Class",
+				"Singleton Pattern Thread Safe Lazy Initialization Double Checked Locking", "Repository Pattern Data Access Abstraction Persistence Agnostic",
+				"Dependency Injection IoC Inversion of Control Container Constructor Injection", "Domain Driven Design DDD Bounded Context Aggregate Root Entity Value Object",
+				"Clean Architecture Hexagonal Architecture Ports and Adapters Layer Separation", "Command Pattern Encapsulate Request Undo Redo Queue Execution",
+				"State Pattern State Transition Object Behavior Change", "Adapter Pattern Interface Compatibility Legacy Code Wrapper",
+				"Facade Pattern Unified Simplified Interface Subsystem", "Proxy Pattern Virtual Proxy Protection Proxy Caching Proxy",
+				"Template Method Pattern Algorithm Skeleton Subclass Override", "Chain of Responsibility Pattern Request Handling Pipeline Handler",
+				"Flyweight Pattern Memory Savings Shared State Extrinsic State", "Bridge Pattern Decouple Abstraction Implementation",
+				"Builder Pattern Fluent Interface Stepwise Complex Object Construction",
+			},
+		},
+		{
+			Category: "Security, Authentication & Cryptography",
+			Topics: []string{
+				"OAuth 2.0 Authorization Code Flow Access Token Refresh Token Scopes", "OpenID Connect OIDC Identity Layer ID Token JWT Claims Verification",
+				"AES Symmetric Encryption AES GCM Authenticated Encryption Nonce", "RSA Public Key Asymmetric Cryptography Key Pair Signatures",
+				"Password Hashing Argon2id bcrypt PBKDF2 Salt Work Factor", "SHA 256 Cryptographic Hash Collision Resistance Hash Digest",
+				"CORS Security Allowed Origins Headers Methods Preflight Options", "CSRF Protection SameSite Cookies CSRF Tokens Double Submit Cookie",
+				"XSS Cross Site Scripting Sanitization Content Security Policy CSP", "SQL Injection Defense Parameterized Queries Prepared Statements ORM",
+				"Mutual TLS mTLS Client Certificates Peer Verification Handshake", "API Key Authentication Rate Limiting Header Query Parameter",
+				"Zero Trust Security Model Identity Verification Least Privilege Microsegmentation", "JWT JSON Web Token Header Payload Signature Alg Verification",
+				"Key Rotation Secret Management HSM KMS HashiCorp Vault", "WAF Web Application Firewall OWASP Top 10 Rule Engine",
+				"DDoS Mitigation Anycast IP Rate Limiting SYN Cookies Scrubbing", "Security Headers HSTS X Content Type Options X Frame Options",
+				"RBAC Role Based Access Control Permission Matrix Authorization", "ABAC Attribute Based Access Control Policy Engine Dynamic Evaluation",
+			},
+		},
+		{
+			Category: "Machine Learning Infrastructure & RAG Engineering",
+			Topics: []string{
+				"Transformer Architecture Self Attention Multi Head Attention Positional Encoding", "Attention Mechanism Query Key Value Softmax Scoring Context Vector",
+				"Vector Embeddings Dense Feature Representations Cosine Similarity Euclidean Distance", "Reciprocal Rank Fusion RRF Sparse BM25 Dense Vector Score Merging",
+				"HNSW Hierarchical Navigable Small World Graph Vector Index", "RAG Retrieval Augmented Generation Ingestion Chunking Embeddings Retrieval Prompting",
+				"LLM Fine Tuning LoRA Low Rank Adaptation PEFT Parameter Efficient", "Quantization FP16 INT8 INT4 Model Compression Inference Acceleration",
+				"Tokenization Byte Pair Encoding BPE Tiktoken WordPiece Subword", "Prompt Engineering System Prompt Chain of Thought Few Shot In Context",
+				"Semantic Search BM25 Hybrid Keyword Vector Scoring", "Vector Store Milvus Qdrant Pinecone Weaviate Chroma Indexing",
+				"Document Processor HTML Parsing Markdown Conversion Noise Stripping", "Model Context Protocol MCP JSON RPC Stdio Server Agent Integration",
+				"Agent Function Calling JSON Schema Tool Registration Execution Loop", "LLM Inference Server vLLM Ollama TensorRT LLM Batching KV Cache",
+				"Embedding Generation SentenceTransformers OpenAI Embeddings Feature Vector", "Reranking Cross Encoder BM25 Candidate Rescoring",
+				"Text Chunking Fixed Size Overlap Semantic Header Based Chunking", "Evaluations RAGAS Faithfulness Context Precision Answer Relevance",
+			},
+		},
+	}
+
+	totalIngested := 0
+	startTime := time.Now()
+
+	for _, domain := range domains {
+		if ctx.Err() != nil {
+			break
+		}
+		if *limit > 0 && totalIngested >= *limit {
+			break
+		}
+		for _, topic := range domain.Topics {
+			if ctx.Err() != nil {
+				break
+			}
+			if *limit > 0 && totalIngested >= *limit {
+				break
+			}
+			for v := 1; v <= 5; v++ {
+				if ctx.Err() != nil {
+					break
+				}
+				if *limit > 0 && totalIngested >= *limit {
+					break
+				}
+				totalIngested++
+				url := fmt.Sprintf("https://sde-knowledge.org/%s/%s/v%d", slugify(domain.Category), slugify(topic), v)
+				title, cleanBody := generateSeedArticle(domain.Category, topic, v)
+				totalTokens := len(strings.Fields(cleanBody))
+
+				_ = storage.SaveCrawledDocument(ctx, url, title, cleanBody, totalTokens, "sde_corpus", url)
+				index.GlobalEngine.IndexDocumentDirectly(url, title, cleanBody, totalTokens)
+			}
+		}
+	}
+
+	saveStorage(*dataDir)
+	duration := time.Since(startTime)
+
+	if !*quiet {
+		totalDocs, avgLen, vocabSize := index.GlobalEngine.GetInvertedIndex().GetStats()
+		fmt.Fprintf(os.Stderr, "✅ Successfully seeded %d SDE corpus documents in %v!\n", totalIngested, duration)
+		fmt.Fprintf(os.Stderr, "   - Total Indexed Documents: %d\n", totalDocs)
+		fmt.Fprintf(os.Stderr, "   - Average Document Length: %.2f tokens\n", avgLen)
+		fmt.Fprintf(os.Stderr, "   - Vocabulary Size:         %d unique terms\n", vocabSize)
+		fmt.Fprintf(os.Stderr, "   - Snapshots saved to:      %s/\n", *dataDir)
+	}
+}
+
+func generateSeedArticle(category, topic string, variation int) (string, string) {
+	subtitles := map[int]string{
+		1: "Foundational Architecture and Internal Mechanics",
+		2: "Production Implementation and State Management",
+		3: "Performance Benchmarking and Scale Optimization",
+		4: "Fault Tolerance, Reliability, and Resiliency",
+		5: "Advanced Distributed Patterns and Case Studies",
+	}
+
+	subtitle := subtitles[variation]
+	if subtitle == "" {
+		subtitle = fmt.Sprintf("Deep Dive Technical Guide (Part %d)", variation)
+	}
+
+	title := fmt.Sprintf("%s: %s — %s", category, topic, subtitle)
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s\n\n", title))
+	sb.WriteString("## Architectural Overview\n\n")
+	sb.WriteString(fmt.Sprintf("In high-throughput systems engineering, `%s` represents a critical building block within the `%s` domain. ", topic, category))
+	sb.WriteString(fmt.Sprintf("When designing scalable distributed topologies or core systems software, `%s` provides concrete structural guarantees around latency budgets, concurrency hazards, and resource boundaries.\n\n", topic))
+
+	sb.WriteString("## Core Components & Structural Invariants\n\n")
+	sb.WriteString(fmt.Sprintf("Implementing `%s` requires rigorous attention to memory alignment, lock contention, cache-line bouncing, and error boundary isolation.\n\n", topic))
+
+	sb.WriteString("## Operational Trade-Offs & Complexity Analysis\n\n")
+	sb.WriteString(fmt.Sprintf("Production deployment of `%s` involves evaluating time and space complexity against system-level operational overhead:\n\n", topic))
+	sb.WriteString("- **Time Complexity**: Optimal amortized bounds ensure predictable tail latency (p99/p99.9).\n")
+	sb.WriteString("- **Space Overhead**: Auxiliary heap allocations are controlled through pre-allocated buffers and object pooling.\n")
+
+	return title, sb.String()
+}
+
+func slugify(s string) string {
+	var res []rune
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			res = append(res, r)
+		} else if r == ' ' || r == '-' || r == '_' || r == '&' {
+			res = append(res, '-')
+		}
+	}
+	return string(res)
+}
+
+func runCrawl(args []string) {
+	allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+	client := crawler.NewTestClient(allowLoopback)
+	runCrawlWithClient(client, args)
+}
+
+func runCrawlWithClient(client *crawler.Client, args []string) {
+	fs := flag.NewFlagSet("crawl", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	maxDepth := fs.Int("depth", 2, "Maximum link crawl depth")
+	fs.IntVar(maxDepth, "d", 2, "Maximum link crawl depth (shorthand)")
+	maxPages := fs.Int("max-pages", 50, "Maximum pages to crawl")
+	fs.IntVar(maxPages, "p", 50, "Maximum pages to crawl (shorthand)")
+	include := fs.String("include", "", "Comma-separated URL include patterns")
+	fs.StringVar(include, "i", "", "Include patterns (shorthand)")
+	exclude := fs.String("exclude", "", "Comma-separated URL exclude patterns")
+	fs.StringVar(exclude, "e", "", "Exclude patterns (shorthand)")
+	allowSubdoms := fs.Bool("subdomains", false, "Allow crawling subdomains")
+	sitemap := fs.Bool("sitemap", true, "Enable sitemap discovery")
+	concurrency := fs.Int("concurrency", 8, "Worker concurrency count")
+	fs.IntVar(concurrency, "c", 8, "Worker concurrency (shorthand)")
+	rateLimit := fs.Float64("rate-limit", 10.0, "Per-host rate limit in requests per second")
+	fs.Float64Var(rateLimit, "r", 10.0, "Rate limit RPS (shorthand)")
+	jsonOut := fs.Bool("json", false, "Output structured JSON summary")
+	fs.BoolVar(jsonOut, "j", false, "Output JSON (shorthand)")
+	asyncMode := fs.Bool("async", false, "Run crawl job asynchronously in background")
+	dataDir := fs.String("data-dir", "data", "Snapshot data directory")
+
+	posArgs, err := parseInterleavedFlags(fs, args)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	if len(posArgs) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: Missing seed URL.")
+		fmt.Fprintln(os.Stderr, "Usage: agentlimbs crawl <url> [flags]")
+		os.Exit(1)
+	}
+
+	seedURL := posArgs[0]
+	var incPatterns, excPatterns []string
+	if *include != "" {
+		incPatterns = strings.Split(*include, ",")
+	}
+	if *exclude != "" {
+		excPatterns = strings.Split(*exclude, ",")
+	}
+
+	allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+	if client == nil {
+		client = crawler.NewTestClient(allowLoopback)
+	}
+
+	loadSnapshotsForCLI(*dataDir)
+	jm := crawler.NewJobManager(client, *dataDir)
+	defer jm.Close()
+
+	req := crawler.CrawlRequest{
+		URL:              seedURL,
+		MaxDepth:         *maxDepth,
+		MaxPages:         *maxPages,
+		IncludePatterns:  incPatterns,
+		ExcludePatterns:  excPatterns,
+		AllowSubdomains:  *allowSubdoms,
+		SitemapDiscovery: *sitemap,
+		Concurrency:      *concurrency,
+		RateLimitRPS:     *rateLimit,
+		Async:            *asyncMode,
+		AllowLoopback:    allowLoopback,
+	}
+
+	job, err := jm.StartCrawl(context.Background(), req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting crawl: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !*asyncMode {
+		saveStorage(*dataDir)
+	}
+
+	if *jsonOut {
+		jsonBytes, _ := json.MarshalIndent(job, "", "  ")
+		fmt.Println(string(jsonBytes))
+		return
+	}
+
+	fmt.Printf("🕷️ Crawl Job %s finished with status: %s\n", job.ID, job.GetStatus())
+	fmt.Printf("   - Pages Crawled: %d\n", job.PagesCrawled.Load())
+	fmt.Printf("   - Pages Queued:  %d\n", job.PagesQueued.Load())
+	fmt.Printf("   - Tokens Saved:  %d\n", job.TokensSaved.Load())
+	if job.ErrorsCount.Load() > 0 {
+		fmt.Printf("   - Errors:        %d\n", job.ErrorsCount.Load())
+	}
+}
+
+func runExtract(args []string) {
+	allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+	client := crawler.NewTestClient(allowLoopback)
+	runExtractWithClient(client, args)
+}
+
+func runExtractWithClient(client *crawler.Client, args []string) {
+	fs := flag.NewFlagSet("extract", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	schemaPath := fs.String("schema", "", "JSON Schema file path or raw JSON string")
+	fs.StringVar(schemaPath, "s", "", "JSON Schema path/string (shorthand)")
+	prompt := fs.String("prompt", "", "Additional extraction instructions")
+	fs.StringVar(prompt, "p", "", "Extraction prompt (shorthand)")
+	model := fs.String("model", "", "LLM model override")
+	fs.StringVar(model, "m", "", "LLM model (shorthand)")
+	outFile := fs.String("out", "", "Save JSON output to file")
+	fs.StringVar(outFile, "o", "", "Output file (shorthand)")
+	jsonOut := fs.Bool("json", true, "Output raw JSON")
+	fs.BoolVar(jsonOut, "j", true, "Output JSON (shorthand)")
+
+	posArgs, err := parseInterleavedFlags(fs, args)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	if len(posArgs) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: Missing target URL or file path.")
+		fmt.Fprintln(os.Stderr, "Usage: agentlimbs extract <url> --schema <file.json> [flags]")
+		os.Exit(1)
+	}
+
+	if *schemaPath == "" {
+		fmt.Fprintln(os.Stderr, "Error: Missing required --schema flag.")
+		os.Exit(1)
+	}
+
+	schemaBytes := []byte(*schemaPath)
+	if fileBytes, readErr := os.ReadFile(*schemaPath); readErr == nil {
+		schemaBytes = fileBytes
+	}
+
+	target := posArgs[0]
+	var htmlContent string
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		normURL, err := utils.NormalizeURL(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: Invalid URL: %v\n", err)
+			os.Exit(1)
+		}
+		allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+		if client == nil {
+			client = crawler.NewTestClient(allowLoopback)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		res, err := client.Fetch(ctx, utils.TransformGitHubURL(normURL))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error fetching %s: %v\n", target, err)
+			os.Exit(1)
+		}
+		defer res.Response.Body.Close()
+
+		limitedBody := io.LimitReader(res.Response.Body, 10*1024*1024)
+		b, _ := io.ReadAll(limitedBody)
+		htmlContent = string(b)
+	} else if fileContent, err := os.ReadFile(target); err == nil {
+		htmlContent = string(fileContent)
+	} else {
+		htmlContent = target
+	}
+
+	allowLoopback := os.Getenv("ENV") == "test" || os.Getenv("AGENTLIMBS_ALLOW_LOOPBACK") == "1"
+	llm := search.NewLLMProviderFromEnv(allowLoopback)
+
+	result, err := extractor.ExtractStructuredJSON(context.Background(), htmlContent, string(schemaBytes), *prompt, llm)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error during extraction: %v\n", err)
+		os.Exit(1)
+	}
+
+	jsonBytes, _ := json.MarshalIndent(result.Data, "", "  ")
+	if *outFile != "" {
+		_ = os.WriteFile(*outFile, jsonBytes, 0644)
+		fmt.Fprintf(os.Stderr, "Extracted JSON saved to %s\n", *outFile)
+	} else if *jsonOut {
+		fmt.Println(string(jsonBytes))
+	}
+}
+
+func main() {
+	logger.InitLogger(os.Getenv("ENV"))
+	defer logger.Sync()
+
+	if len(os.Args) == 1 {
+		runServe(nil)
+		return
+	}
+
+	firstArg := os.Args[1]
+
+	// Handle global help or version flags
+	if firstArg == "-h" || firstArg == "--help" || firstArg == "help" {
+		printHelp()
+		return
+	}
+
+	if firstArg == "-v" || firstArg == "--version" || firstArg == "version" {
+		fmt.Printf("agentlimbs %s\n", version)
+		return
+	}
+
+	// Backward compatibility: If first arg starts with "-", treat as `serve` flags
+	if strings.HasPrefix(firstArg, "-") {
+		runServe(os.Args[1:])
+		return
+	}
+
+	// Dispatch to subcommands
+	subcommandArgs := os.Args[2:]
+	switch firstArg {
+	case "serve":
+		runServe(subcommandArgs)
+	case "scrape":
+		runScrape(subcommandArgs)
+	case "crawl":
+		runCrawl(subcommandArgs)
+	case "extract":
+		runExtract(subcommandArgs)
+	case "search":
+		runSearch(subcommandArgs)
+	case "init-mcp":
+		runInitMCP(subcommandArgs)
+	case "seed":
+		runSeed(subcommandArgs)
+	default:
+		fmt.Fprintf(os.Stderr, "Error: Unknown subcommand %q\nRun 'agentlimbs --help' for usage.\n", firstArg)
+		os.Exit(1)
 	}
 }

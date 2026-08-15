@@ -14,17 +14,17 @@ const RRFConstant = 60.0
 
 // HybridSearchHit represents a search result combined from lexical and vector indexes.
 type HybridSearchHit struct {
-	DocID       string  `json:"doc_id"`
-	RRFScore    float64 `json:"rrf_score"`
-	BM25Score   float64 `json:"bm25_score"`
-	VectorSim   float64 `json:"vector_similarity"`
-	BM25Rank    *int    `json:"bm25_rank"`
-	VectorRank  *int    `json:"vector_rank"`
-	Title       string  `json:"title"`
-	URL         string  `json:"url"`
-	SourceType  string  `json:"source_type"`
-	SourceURL   string  `json:"source_url"`
-	Snippet     string  `json:"snippet"`
+	DocID      string  `json:"doc_id"`
+	RRFScore   float64 `json:"rrf_score"`
+	BM25Score  float64 `json:"bm25_score"`
+	VectorSim  float64 `json:"vector_similarity"`
+	BM25Rank   *int    `json:"bm25_rank"`
+	VectorRank *int    `json:"vector_rank"`
+	Title      string  `json:"title"`
+	URL        string  `json:"url"`
+	SourceType string  `json:"source_type"`
+	SourceURL  string  `json:"source_url"`
+	Snippet    string  `json:"snippet"`
 }
 
 // ReciprocalRankFusion merges and ranks BM25 lexical results and dense vector results into a unified list.
@@ -113,7 +113,7 @@ func ReciprocalRankFusion(
 
 		var vecRankPtr *int
 		vecRank, inVec := vectorRanks[docID]
-		if inVec && vectorSims[docID] > 0 {
+		if inVec {
 			score += 1.0 / (RRFConstant + float64(vecRank))
 			r := vecRank
 			vecRankPtr = &r
@@ -199,7 +199,7 @@ func ReciprocalRankFusion(
 		candidates = candidates[:topK]
 	}
 
-	var fusedHits []HybridSearchHit
+	fusedHits := make([]HybridSearchHit, 0, len(candidates))
 	for _, c := range candidates {
 		fusedHits = append(fusedHits, HybridSearchHit{
 			DocID:      c.docID,

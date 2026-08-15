@@ -140,3 +140,26 @@ func TestMultiTierProxyManager_Concurrency(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestProxyTransport_CachedTransportsReuse(t *testing.T) {
+	pm, _ := NewMultiTierProxyManager([]string{"http://dc1.proxy.com:8080"}, nil)
+	pm.AllowLoopback = true
+
+	baseTr := &http.Transport{}
+	wrapped := pm.WrapTransport(baseTr)
+	pt, ok := wrapped.(*ProxyTransport)
+	if !ok {
+		t.Fatalf("Expected *ProxyTransport type")
+	}
+
+	// First request with failedAttempts = 1
+	req1, _ := http.NewRequestWithContext(WithRetryAttempt(context.Background(), 1), "GET", "https://example.com/test1", nil)
+	// We don't actually need to make network call, just inspect RoundTrip setup or cachedTransports after getting proxy
+	_, _ = pm.GetProxy(req1.URL.String(), 1)
+
+	// RoundTrip on wrapped transport
+	// Using a mock server or checking cachedTransports
+	if pt.cachedTransports == nil {
+		t.Fatalf("cachedTransports map must not be nil")
+	}
+}

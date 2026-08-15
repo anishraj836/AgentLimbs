@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -66,5 +67,50 @@ func TestLocalStorageSave(t *testing.T) {
 
 	if _, err := os.Stat(filePath); err != nil {
 		t.Errorf("Expected saved gzip file at %s to exist", filePath)
+	}
+}
+
+func TestPingDB_FileFallback(t *testing.T) {
+	ctx := context.Background()
+	// When Pool is nil, PingDB returns nil (fallback mode)
+	Pool = nil
+	err := PingDB(ctx)
+	if err != nil {
+		t.Errorf("expected PingDB to return nil in fallback mode, got %v", err)
+	}
+
+	// Even if DATABASE_URL is set, if Pool is nil, return nil (local/fallback mode)
+	os.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
+	defer os.Unsetenv("DATABASE_URL")
+	err = PingDB(ctx)
+	if err != nil {
+		t.Errorf("expected PingDB to return nil when Pool == nil even with DATABASE_URL set, got %v", err)
+	}
+}
+
+func TestInitDB_UnreachableConnectionFallback(t *testing.T) {
+	// With an unreachable address, InitDB should gracefully complete retries and ensure Pool == nil
+	Pool = nil
+	InitDB("postgres://invalid_user:invalid_pass@127.0.0.1:54329/nonexistent_db?connect_timeout=1")
+	if Pool != nil {
+		t.Errorf("Expected Pool to be nil after unreachable InitDB, got non-nil pointer")
+	}
+}
+
+func TestWriteDirectly(t *testing.T) {
+	tmpDir := t.TempDir()
+	dst := filepath.Join(tmpDir, "direct_test.json")
+	data := []byte(`{"direct": true}`)
+
+	if err := writeDirectly(dst, data, 0644); err != nil {
+		t.Fatalf("writeDirectly failed: %v", err)
+	}
+
+	read, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("Failed to read directly written file: %v", err)
+	}
+	if string(read) != string(data) {
+		t.Errorf("Expected file content %s, got %s", string(data), string(read))
 	}
 }

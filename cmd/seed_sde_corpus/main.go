@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/crawler-monorepo/internal/index"
@@ -21,8 +24,11 @@ type SDEDomain struct {
 func main() {
 	fmt.Println("🚀 Initializing 1,000+ SDE Corpus Batch Ingestion Engine...")
 
-	ctx := context.Background()
-	rand.Seed(time.Now().UnixNano())
+	storage.InitDB(os.Getenv("DATABASE_URL"))
+	defer storage.CloseDB()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	domains := []SDEDomain{
 		{
@@ -201,10 +207,20 @@ func main() {
 
 	// Ingest 1,000 distinct SDE documentation topics (10 domains x 20-40 topics x 5 variations)
 	for dIdx, domain := range domains {
+		if ctx.Err() != nil {
+			fmt.Println("⚠️ Ingestion interrupted by signal context.")
+			break
+		}
 		fmt.Printf("📦 Ingesting Domain [%d/10]: %s...\n", dIdx+1, domain.Category)
 
 		for _, topic := range domain.Topics {
+			if ctx.Err() != nil {
+				break
+			}
 			for v := 1; v <= 5; v++ {
+				if ctx.Err() != nil {
+					break
+				}
 				totalIngested++
 				url := fmt.Sprintf("https://sde-knowledge.org/%s/%s/v%d", slugify(domain.Category), slugify(topic), v)
 				title, cleanBody := generateArticleMarkdown(domain.Category, topic, v)
@@ -223,6 +239,15 @@ func main() {
 	fmt.Printf("\n✅ BATCH INGESTION COMPLETE!\n")
 	fmt.Printf("📊 Total SDE Documents Ingested: %d pages\n", totalIngested)
 	fmt.Printf("⏱️ Ingestion Time: %v (%.2f docs/sec)\n", duration, float64(totalIngested)/duration.Seconds())
+
+	// Persist index snapshots before exit
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	_ = os.MkdirAll(dataDir, 0755)
+	_ = index.GlobalEngine.GetInvertedIndex().SaveSnapshot(filepath.Join(dataDir, "inverted_index.json"))
+	_ = index.GlobalEngine.GetVectorIndex().SaveSnapshot(filepath.Join(dataDir, "vector_index.json"))
 
 	// Print Corpus Statistics
 	totalDocs, avgLen, vocabSize := index.GlobalEngine.GetInvertedIndex().GetStats()

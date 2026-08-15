@@ -17,7 +17,7 @@ type ProxyTier int
 
 const (
 	Tier1Direct      ProxyTier = 1 // Direct Egress
-	Tier2Datacenter ProxyTier = 2 // Datacenter Proxy
+	Tier2Datacenter  ProxyTier = 2 // Datacenter Proxy
 	Tier3Residential ProxyTier = 3 // Residential Proxy
 )
 
@@ -146,8 +146,10 @@ func (m *MultiTierProxyManager) GetProxy(targetURL string, failedAttempts int) (
 
 // ProxyTransport wraps an http.RoundTripper to handle dynamic proxy selection, SSRF checks, and response payload capping.
 type ProxyTransport struct {
-	baseTransport http.RoundTripper
-	proxyManager  *MultiTierProxyManager
+	mu               sync.RWMutex
+	baseTransport    http.RoundTripper
+	proxyManager     *MultiTierProxyManager
+	cachedTransports map[string]*http.Transport
 }
 
 // WrapTransport wraps baseTr with proxy routing and 2MB response capping logic.
@@ -156,8 +158,9 @@ func (m *MultiTierProxyManager) WrapTransport(baseTr http.RoundTripper) http.Rou
 		baseTr = http.DefaultTransport
 	}
 	return &ProxyTransport{
-		baseTransport: baseTr,
-		proxyManager:  m,
+		baseTransport:    baseTr,
+		proxyManager:     m,
+		cachedTransports: make(map[string]*http.Transport),
 	}
 }
 
@@ -182,12 +185,27 @@ func (pt *ProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	var tr http.RoundTripper = pt.baseTransport
 
-	// If a proxy URL is assigned, configure dynamic Proxy function on Transport clone if applicable
+	// If a proxy URL is assigned, reuse cached Transport to preserve connection pooling
 	if proxyURL != nil {
 		if stdTr, ok := pt.baseTransport.(*http.Transport); ok {
-			trClone := stdTr.Clone()
-			trClone.Proxy = http.ProxyURL(proxyURL)
-			tr = trClone
+			proxyKey := proxyURL.String()
+			pt.mu.RLock()
+			cachedTr, exists := pt.cachedTransports[proxyKey]
+			pt.mu.RUnlock()
+
+			if exists {
+				tr = cachedTr
+			} else {
+				pt.mu.Lock()
+				cachedTr, exists = pt.cachedTransports[proxyKey]
+				if !exists {
+					cachedTr = stdTr.Clone()
+					cachedTr.Proxy = http.ProxyURL(proxyURL)
+					pt.cachedTransports[proxyKey] = cachedTr
+				}
+				pt.mu.Unlock()
+				tr = cachedTr
+			}
 		}
 	}
 

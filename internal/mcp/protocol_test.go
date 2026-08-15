@@ -148,3 +148,92 @@ func TestMCPProtocol_ParseError(t *testing.T) {
 		t.Fatalf("expected error code -32700, got: %v", resp.Error)
 	}
 }
+
+func TestMCPProtocol_NotificationNoResponse(t *testing.T) {
+	// JSON-RPC notification (valid jsonrpc 2.0, non-empty method, no ID)
+	notif := `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	respBytes, err := HandleRPCMessage([]byte(notif), nil)
+	if err != nil {
+		t.Fatalf("unexpected error on notification: %v", err)
+	}
+	if len(respBytes) != 0 {
+		t.Fatalf("expected empty response (nil) for JSON-RPC notification, got: %s", string(respBytes))
+	}
+
+	// Standard method called as notification (no ID)
+	initNotif := `{"jsonrpc":"2.0","method":"initialize"}`
+	respBytes2, err := HandleRPCMessage([]byte(initNotif), nil)
+	if err != nil {
+		t.Fatalf("unexpected error on initialize notification: %v", err)
+	}
+	if len(respBytes2) != 0 {
+		t.Fatalf("expected empty response for initialize notification, got: %s", string(respBytes2))
+	}
+}
+
+func TestMCPProtocol_InvalidRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		req        string
+		expectedID interface{}
+	}{
+		{
+			name:       "Missing method with id",
+			req:        `{"jsonrpc":"2.0","id":1}`,
+			expectedID: float64(1),
+		},
+		{
+			name:       "Empty method string with id",
+			req:        `{"jsonrpc":"2.0","id":"abc","method":""}`,
+			expectedID: "abc",
+		},
+		{
+			name:       "Invalid jsonrpc version 1.0",
+			req:        `{"jsonrpc":"1.0","id":2,"method":"initialize"}`,
+			expectedID: float64(2),
+		},
+		{
+			name:       "Missing jsonrpc field with id",
+			req:        `{"id":3,"method":"initialize"}`,
+			expectedID: float64(3),
+		},
+		{
+			name:       "Missing method without id (invalid notification)",
+			req:        `{"jsonrpc":"2.0"}`,
+			expectedID: nil,
+		},
+		{
+			name:       "Missing jsonrpc without id (invalid notification)",
+			req:        `{"method":"notifications/test"}`,
+			expectedID: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			respBytes, err := HandleRPCMessage([]byte(tt.req), nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(respBytes) == 0 {
+				t.Fatalf("expected response for invalid request, got nil/empty")
+			}
+
+			var resp JSONRPCResponse
+			if err := json.Unmarshal(respBytes, &resp); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+			if resp.Error == nil {
+				t.Fatalf("expected error response, got nil error")
+			}
+			if resp.Error.Code != -32600 {
+				t.Errorf("expected error code -32600, got: %d (%s)", resp.Error.Code, resp.Error.Message)
+			}
+			if resp.ID != tt.expectedID {
+				t.Errorf("expected ID %v, got %v", tt.expectedID, resp.ID)
+			}
+		})
+	}
+}
+
+

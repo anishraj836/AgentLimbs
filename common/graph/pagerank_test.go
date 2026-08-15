@@ -76,4 +76,3 @@ func TestPageRankEmptyGraph(t *testing.T) {
 		t.Errorf("expected empty ranks map for empty graph, got %v", ranks)
 	}
 }
-

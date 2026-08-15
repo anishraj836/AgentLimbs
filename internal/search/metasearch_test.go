@@ -231,3 +231,63 @@ func TestMetasearchAdapter_SingleflightContextIsolation(t *testing.T) {
 	}
 	_ = hits2
 }
+
+func TestMetasearchAdapter_TopKKeyDifferentiation(t *testing.T) {
+	var requestCount int32
+	mockDDGServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><div class="result"><a class="result__a" href="https://example.com/test">Title</a></div></body></html>`))
+	}))
+	defer mockDDGServer.Close()
+
+	eng := index.NewIndexEngine()
+	adapter := NewMetasearchAdapter(eng).
+		WithBaseURL(mockDDGServer.URL).
+		WithHTTPClient(mockDDGServer.Client()).
+		WithTimeout(2 * time.Second)
+
+	// Different topK should result in different singleflight keys
+	_, _ = adapter.Search(context.Background(), "query-diff-topk", 5)
+	_, _ = adapter.Search(context.Background(), "query-diff-topk", 10)
+
+	if count := atomic.LoadInt32(&requestCount); count != 2 {
+		t.Errorf("Expected 2 separate singleflight requests for different topK values, got %d", count)
+	}
+}
+
+func TestMetasearchAdapter_CancelledCallerReturnsImmediately(t *testing.T) {
+	mockDDGServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body></body></html>`))
+	}))
+	defer mockDDGServer.Close()
+
+	eng := index.NewIndexEngine()
+	adapter := NewMetasearchAdapter(eng).
+		WithBaseURL(mockDDGServer.URL).
+		WithHTTPClient(mockDDGServer.Client()).
+		WithTimeout(2 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := adapter.Search(ctx, "cancelled-query", 5)
+	if err == nil {
+		t.Fatalf("Expected context cancellation error, got nil")
+	}
+	if err != context.Canceled {
+		t.Errorf("Expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestMetasearchAdapter_NilHTTPClientFallback(t *testing.T) {
+	eng := index.NewIndexEngine()
+	adapter := NewMetasearchAdapter(eng).
+		WithHTTPClient(nil).
+		WithCrawlerClient(nil)
+
+	// Should not panic even if httpClient is nil
+	_, _ = adapter.QueryDuckDuckGo(context.Background(), "test")
+}

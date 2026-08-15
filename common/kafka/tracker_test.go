@@ -103,26 +103,41 @@ func TestOffsetTrackerCommitErrorRetry(t *testing.T) {
 	}
 }
 
-func TestOffsetTrackerMarkFailed(t *testing.T) {
+func TestOffsetTrackerMarkFailed_PreventsCommitPastFailedOffset(t *testing.T) {
 	ot := NewOffsetTracker()
 	consumer := &mockCommitter{}
 
+	msg0 := skafka.Message{Partition: 0, Offset: 0}
 	msg1 := skafka.Message{Partition: 0, Offset: 1}
 	msg2 := skafka.Message{Partition: 0, Offset: 2}
 
+	ot.MarkStarted(msg0)
 	ot.MarkStarted(msg1)
 	ot.MarkStarted(msg2)
 
-	// msg1 fails (e.g. panic or unmarshal error)
-	ot.MarkFailed(msg1)
-
-	// msg2 completes; since msg1 failed and was removed from in-flight, msg2 can commit
-	err := ot.MarkCompleted(context.Background(), consumer, msg2)
+	// msg0 completes -> commits offset 0
+	err := ot.MarkCompleted(context.Background(), consumer, msg0)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("unexpected error on msg0 complete: %v", err)
 	}
-	if len(consumer.committed) != 1 || consumer.committed[0] != 2 {
-		t.Errorf("expected commit of offset 2 after msg1 marked failed, got %v", consumer.committed)
+	if len(consumer.committed) != 1 || consumer.committed[0] != 0 {
+		t.Fatalf("expected commit of offset 0, got %v", consumer.committed)
+	}
+
+	// msg1 fails (e.g. panic or unmarshal error)
+	err = ot.MarkFailed(context.Background(), consumer, msg1)
+	if err != nil {
+		t.Fatalf("unexpected error on msg1 fail: %v", err)
+	}
+
+	// msg2 completes; since msg1 failed, committing msg2 would skip msg1 in Kafka.
+	// Tracker must block committing past failed offset 1 to guarantee retry on restart.
+	err = ot.MarkCompleted(context.Background(), consumer, msg2)
+	if err != nil {
+		t.Fatalf("unexpected error on msg2 complete: %v", err)
+	}
+	if len(consumer.committed) != 1 {
+		t.Errorf("expected no further commits past failed offset 1 (kept at offset 0), got %v", consumer.committed)
 	}
 }
 
@@ -140,4 +155,3 @@ func TestOffsetTrackerRevokePartition(t *testing.T) {
 	}
 	ot.mu.Unlock()
 }
-

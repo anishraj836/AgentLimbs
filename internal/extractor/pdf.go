@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // IsPDF checks if data starts with or contains %PDF- header.
@@ -1090,12 +1091,12 @@ func parsePDFHexString(s string) string {
 }
 
 var (
-	reEnDashDigits           = regexp.MustCompile(`(\d)[\x00-\x1f\x7f-\x9f](\d)`)
-	reIsolatedBulletSymbol   = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]*$`)
-	reLeadingBullet          = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]+`)
-	reHyphenUnicode          = regexp.MustCompile(`(?m)(\p{L}+)-\s*\n\s*(\p{L}+)`)
-	reHyphenAscii2           = regexp.MustCompile(`(?m)(\w+)-\s*\n\s*(\w+)`)
-	reSpacesGlobal           = regexp.MustCompile(`[ \t]+`)
+	reEnDashDigits         = regexp.MustCompile(`(\d)[\x00-\x1f\x7f-\x9f](\d)`)
+	reIsolatedBulletSymbol = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]*$`)
+	reLeadingBullet        = regexp.MustCompile(`(?m)^[ \t]*[\x01-\x08\x0e\x0f\x10-\x1f\x7f\x80-\x9f•◦▪][ \t]+`)
+	reHyphenUnicode        = regexp.MustCompile(`(?m)(\p{L}+)-\s*\n\s*(\p{L}+)`)
+	reHyphenAscii2         = regexp.MustCompile(`(?m)(\w+)-\s*\n\s*(\w+)`)
+	reSpacesGlobal         = regexp.MustCompile(`[ \t]+`)
 
 	// Static bullet formatting regexes
 	reIsolatedBulletLine = regexp.MustCompile(`(?m)^[ \t]*[•\-\*\x1e\x1f\x01-\x08\x10-\x1a][ \t]*\n[ \t]*(\S+)`)
@@ -1163,60 +1164,101 @@ var lexicalRepairRules = []lexicalRepairRule{
 }
 
 func decomposeLigatures(s string) string {
-	// 1. Convert Type 1 / Latin-1 font encoding bytes (0x96 en-dash, 0x97 em-dash, 0x95 bullet) to valid UTF-8
-	rFont := strings.NewReplacer(
-		"\u0096", "–",
-		"\u0097", "—",
-		"\u0095", "•",
-		"\x96", "–",
-		"\x97", "—",
-		"\x95", "•",
-		"\x91", "'",
-		"\x92", "'",
-	)
-	s = rFont.Replace(s)
-
-	// 2. Convert control bytes between digits (e.g. 770\x1f778) to en-dash (770–778)
+	// 1. Convert control bytes between digits (e.g. 770\x1f778) to en-dash (770–778)
 	s = reEnDashDigits.ReplaceAllString(s, "${1}–${2}")
+
+	// 2. Safely decode runes and convert Type 1 / Latin-1 font encoding bytes to valid UTF-8
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b := s[i]
+			switch b {
+			case 0x96:
+				sb.WriteString("–")
+			case 0x97:
+				sb.WriteString("—")
+			case 0x95:
+				sb.WriteString("•")
+			case 0x91, 0x92:
+				sb.WriteString("'")
+			default:
+				sb.WriteByte(b)
+			}
+			i++
+			continue
+		}
+
+		switch r {
+		case '\u0096':
+			sb.WriteString("–")
+		case '\u0097':
+			sb.WriteString("—")
+		case '\u0095':
+			sb.WriteString("•")
+		case '\u0091', '\u0092':
+			sb.WriteString("'")
+		case '\uFB00':
+			sb.WriteString("ff")
+		case '\uFB01':
+			sb.WriteString("fi")
+		case '\uFB02':
+			sb.WriteString("fl")
+		case '\uFB03':
+			sb.WriteString("ffi")
+		case '\uFB04':
+			sb.WriteString("ffl")
+		case '\uFB05':
+			sb.WriteString("ft")
+		case '\uFB06':
+			sb.WriteString("st")
+		case '\x01':
+			sb.WriteString("ff")
+		case '\x02':
+			sb.WriteString("fi")
+		case '\x03':
+			sb.WriteString("fl")
+		case '\x04':
+			sb.WriteString("ffi")
+		case '\x05':
+			sb.WriteString("ffl")
+		case '\x0b':
+			sb.WriteString("ff")
+		case '\x0c':
+			sb.WriteString("fi")
+		case '\x0d':
+			sb.WriteString("fl")
+		case '\x0e':
+			sb.WriteString("ffi")
+		case '\x0f':
+			sb.WriteString("ffl")
+		case '\x1b':
+			sb.WriteString("ff")
+		case '\x1c':
+			sb.WriteString("fi")
+		case '\x1d':
+			sb.WriteString("fl")
+		case '\x1e':
+			sb.WriteString("ffi")
+		case '\x1f':
+			sb.WriteString("ffl")
+		case '\x19':
+			sb.WriteString("i")
+		case '\x1a':
+			sb.WriteString("j")
+		default:
+			sb.WriteRune(r)
+		}
+		i += size
+	}
+	s = sb.String()
 
 	// 3. Convert standalone bullet control bytes to "•" so they are not stripped by unicode.IsPrint
 	s = reIsolatedBulletSymbol.ReplaceAllString(s, "•")
 
 	// 4. Convert leading control bytes on lines to markdown list bullets
 	s = reLeadingBullet.ReplaceAllString(s, "- ")
-
-	// 3. Unambiguous Unicode presentation ligatures & explicit TeX ligatures
-	r := strings.NewReplacer(
-		"\uFB00", "ff",
-		"\uFB01", "fi",
-		"\uFB02", "fl",
-		"\uFB03", "ffi",
-		"\uFB04", "ffl",
-		"\uFB05", "ft",
-		"\uFB06", "st",
-		// TeX Type 1 / custom differences ligatures
-		"\x01", "ff",
-		"\x02", "fi",
-		"\x03", "fl",
-		"\x04", "ffi",
-		"\x05", "ffl",
-		// TeX OT1 ligatures
-		"\x0b", "ff",
-		"\x0c", "fi",
-		"\x0d", "fl",
-		"\x0e", "ffi",
-		"\x0f", "ffl",
-		// TeX T1 ligatures
-		"\x1b", "ff",
-		"\x1c", "fi",
-		"\x1d", "fl",
-		"\x1e", "ffi",
-		"\x1f", "ffl",
-		// TeX dotless i / j
-		"\x19", "i",
-		"\x1a", "j",
-	)
-	s = r.Replace(s)
 
 	return s
 }
@@ -1272,8 +1314,11 @@ func cleanExtractedPDFText(raw string) string {
 				continue
 			}
 		}
-		if strings.HasPrefix(trimmed, "• ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "◦ ") || strings.HasPrefix(trimmed, "▪ ") {
-			trimmed = "- " + strings.TrimSpace(trimmed[2:])
+		for _, prefix := range []string{"• ", "* ", "◦ ", "▪ ", "- "} {
+			if strings.HasPrefix(trimmed, prefix) {
+				trimmed = "- " + strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+				break
+			}
 		}
 		if len(trimmed) > 0 {
 			cleanLines = append(cleanLines, trimmed)

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/crawler-monorepo/common/logger"
 	"github.com/crawler-monorepo/internal/crawler"
 )
 
@@ -137,7 +140,7 @@ func TestStorageInitAndSave(t *testing.T) {
 	}
 
 	// Test initStorage loads without crashing
-	initStorage(tmpDir)
+	initStorage(context.Background(), tmpDir)
 }
 
 func TestSecurityMiddleware(t *testing.T) {
@@ -194,3 +197,315 @@ func TestSecurityMiddleware(t *testing.T) {
 		t.Errorf("expected status 200 OK with valid api_key query param, got %d", rec4.Code)
 	}
 }
+
+func TestParseInterleavedFlags(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	jsonFlag := fs.Bool("json", false, "json flag")
+	modeFlag := fs.String("mode", "clean_rag", "mode flag")
+
+	args := []string{"https://go.dev/doc", "--json", "-mode", "raw"}
+	pos, err := parseInterleavedFlags(fs, args)
+	if err != nil {
+		t.Fatalf("parseInterleavedFlags failed: %v", err)
+	}
+
+	if len(pos) != 1 || pos[0] != "https://go.dev/doc" {
+		t.Errorf("expected positional arg ['https://go.dev/doc'], got %v", pos)
+	}
+	if !*jsonFlag {
+		t.Errorf("expected json flag to be true")
+	}
+	if *modeFlag != "raw" {
+		t.Errorf("expected mode flag 'raw', got %s", *modeFlag)
+	}
+}
+
+func TestCLISeedAndSearch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Run seed into tmpDir with limit 20 for fast unit testing
+	runSeed([]string{"-d", tmpDir, "-q", "-l", "20"})
+
+	// Verify snapshots exist
+	indexPath := filepath.Join(tmpDir, "inverted_index.json")
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		t.Fatalf("inverted_index.json not created in %s", tmpDir)
+	}
+
+	// Test runSearch output
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	runSearch([]string{"Dynamic Programming", "-d", tmpDir, "-j", "-k", "3"})
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+
+	var out bytes.Buffer
+	_, _ = io.Copy(&out, r)
+
+	var hits []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &hits); err != nil {
+		t.Fatalf("failed to unmarshal search json output: %v\nOutput was: %s", err, out.String())
+	}
+
+	if len(hits) == 0 {
+		t.Errorf("expected search hits for 'Dynamic Programming', got 0")
+	}
+}
+
+func TestCLIScrape_DirectAST(t *testing.T) {
+	os.Setenv("ENV", "test")
+	defer os.Unsetenv("ENV")
+
+	tmpDir := t.TempDir()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>CLI Test Page</title></head><body><h1>AST Scrape Success</h1><p>High performance RAG extraction directly to stdout.</p></body></html>`))
+	}))
+	defer ts.Close()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	runScrape([]string{ts.URL, "-j", "-d", tmpDir})
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+
+	var out bytes.Buffer
+	_, _ = io.Copy(&out, r)
+
+	var payload ScrapeCLIOutput
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to parse scrape CLI output json: %v\nOutput was: %s", err, out.String())
+	}
+
+	if payload.Title != "CLI Test Page" {
+		t.Errorf("expected title 'CLI Test Page', got %q", payload.Title)
+	}
+	if !strings.Contains(payload.Markdown, "AST Scrape Success") {
+		t.Errorf("expected markdown to contain 'AST Scrape Success', got: %s", payload.Markdown)
+	}
+	if payload.Tokens <= 0 {
+		t.Errorf("expected positive token count, got %d", payload.Tokens)
+	}
+}
+
+func TestCLIStdoutPurity(t *testing.T) {
+	logger.InitLogger("development")
+	defer logger.Sync()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	// Run init-mcp --stdout
+	runInitMCP([]string{"--stdout", "--binary-path", "/usr/local/bin/agentlimbs"})
+
+	_ = w.Close()
+	os.Stdout = oldStdout
+
+	var out bytes.Buffer
+	_, _ = io.Copy(&out, r)
+
+	outStr := strings.TrimSpace(out.String())
+
+	// Verify it's pure valid JSON without any Zap log text (e.g. "DEBUG", "INFO", "{"level":")
+	var root map[string]any
+	if err := json.Unmarshal([]byte(outStr), &root); err != nil {
+		t.Fatalf("stdout was polluted, not clean JSON: %v\nOutput was: %s", err, outStr)
+	}
+
+	if root["mcpServers"] == nil {
+		t.Errorf("expected mcpServers in stdout json output")
+	}
+}
+
+func TestCLIScrape_OutFile(t *testing.T) {
+	os.Setenv("ENV", "test")
+	defer os.Unsetenv("ENV")
+
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "result.md")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>File Output Test</title></head><body><h1>Saved To Disk</h1></body></html>`))
+	}))
+	defer ts.Close()
+
+	runScrape([]string{ts.URL, "-o", outFile, "--no-index"})
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("failed reading output file: %v", err)
+	}
+
+	if !strings.Contains(string(data), "Saved To Disk") {
+		t.Errorf("expected file to contain 'Saved To Disk', got: %s", string(data))
+	}
+}
+
+func TestPrintHelpAndVersion(t *testing.T) {
+	// Verify printHelp runs without panic
+	printHelp()
+
+	// Verify slugify
+	slug := slugify("Data Structures & Algorithms")
+	if slug != "data-structures---algorithms" && slug != "Data-Structures---Algorithms" {
+		if !strings.Contains(slug, "Data") && !strings.Contains(slug, "data") {
+			t.Errorf("unexpected slug: %s", slug)
+		}
+	}
+}
+
+func TestCrawlEndpoints_SyncAndAsync(t *testing.T) {
+	os.Setenv("ENV", "test")
+	defer os.Unsetenv("ENV")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/":
+			w.Write([]byte(`<html><body><h1>Crawl Root</h1><a href="/sub1">Sub 1</a></body></html>`))
+		case "/sub1":
+			w.Write([]byte(`<html><body><h1>Subpage 1</h1></body></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	server := NewEmbeddedServerWithClient(tmpDir, crawler.NewTestClient(true))
+	router := server.SetupRouter()
+
+	// 1. Test Synchronous POST /v1/crawl
+	syncBody, _ := json.Marshal(map[string]interface{}{
+		"url":           ts.URL + "/",
+		"max_depth":     2,
+		"max_pages":     10,
+		"async":         false,
+		"allow_loopback": true,
+	})
+	req, _ := http.NewRequest("POST", "/v1/crawl", bytes.NewReader(syncBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for sync crawl, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var syncJob crawler.CrawlJob
+	if err := json.Unmarshal(rec.Body.Bytes(), &syncJob); err != nil {
+		t.Fatalf("failed to decode sync crawl response: %v", err)
+	}
+	if syncJob.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", syncJob.Status)
+	}
+
+	// 2. Test Asynchronous POST /v1/crawl
+	asyncBody, _ := json.Marshal(map[string]interface{}{
+		"url":           ts.URL + "/",
+		"max_depth":     2,
+		"max_pages":     10,
+		"async":         true,
+		"allow_loopback": true,
+	})
+	reqAsync, _ := http.NewRequest("POST", "/v1/crawl", bytes.NewReader(asyncBody))
+	reqAsync.Header.Set("Content-Type", "application/json")
+	recAsync := httptest.NewRecorder()
+	router.ServeHTTP(recAsync, reqAsync)
+
+	if recAsync.Code != http.StatusAccepted {
+		t.Fatalf("expected HTTP 202 for async crawl, got %d: %s", recAsync.Code, recAsync.Body.String())
+	}
+
+	var asyncRes map[string]interface{}
+	_ = json.Unmarshal(recAsync.Body.Bytes(), &asyncRes)
+	jobID, ok := asyncRes["job_id"].(string)
+	if !ok || jobID == "" {
+		t.Fatalf("expected valid job_id in async response: %v", asyncRes)
+	}
+
+	// 3. Test GET /v1/crawl/{id}
+	reqGet, _ := http.NewRequest("GET", "/v1/crawl/"+jobID, nil)
+	recGet := httptest.NewRecorder()
+	router.ServeHTTP(recGet, reqGet)
+
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for GET /v1/crawl/%s, got %d", jobID, recGet.Code)
+	}
+
+	// 4. Test DELETE /v1/crawl/{id}
+	reqDel, _ := http.NewRequest("DELETE", "/v1/crawl/"+jobID, nil)
+	recDel := httptest.NewRecorder()
+	router.ServeHTTP(recDel, reqDel)
+
+	if recDel.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for DELETE /v1/crawl/%s, got %d", jobID, recDel.Code)
+	}
+}
+
+func TestSchemaExtractEndpoint(t *testing.T) {
+	os.Setenv("ENV", "test")
+	defer os.Unsetenv("ENV")
+
+	tmpDir := t.TempDir()
+	server := NewEmbeddedServerWithClient(tmpDir, crawler.NewTestClient(true))
+	router := server.SetupRouter()
+
+	schema := map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"type":    "object",
+		"properties": map[string]interface{}{
+			"result":    map[string]string{"type": "string"},
+			"extracted": map[string]string{"type": "boolean"},
+		},
+		"required": []string{"result", "extracted"},
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"html":   "<html><body><h1>Extract Me</h1></body></html>",
+		"schema": schema,
+		"prompt": "Extract standard result object",
+	})
+
+	req, _ := http.NewRequest("POST", "/v1/extract/schema", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for /v1/extract/schema, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCLICrawlAndExtract(t *testing.T) {
+	os.Setenv("ENV", "test")
+	defer os.Unsetenv("ENV")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<html><body><h1>CLI Crawl Root</h1><p>Test page</p></body></html>`))
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+
+	// 1. Test CLI Crawl
+	client := crawler.NewTestClient(true)
+	runCrawlWithClient(client, []string{ts.URL + "/", "--depth", "1", "--max-pages", "5", "--json", "--data-dir", tmpDir})
+
+	// 2. Test CLI Extract
+	schemaJSON := `{"type":"object","properties":{"result":{"type":"string"}},"required":["result"]}`
+	schemaFile := filepath.Join(tmpDir, "schema.json")
+	_ = os.WriteFile(schemaFile, []byte(schemaJSON), 0644)
+
+	runExtractWithClient(client, []string{ts.URL + "/", "--schema", schemaFile, "--json"})
+}
+

@@ -2,12 +2,14 @@ package crawler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/crawler-monorepo/common/middleware"
 	"github.com/crawler-monorepo/common/tracing"
@@ -230,6 +232,88 @@ Disallow: /blocked/
 	}
 	if rd.IsAllowed("OtherBot", "https://example.com/blocked/page") == true {
 		t.Errorf("Expected /blocked/page to be disallowed for OtherBot")
+	}
+}
+
+func TestRobotsTxtParser_MultipleUserAgentsAndSpecificity(t *testing.T) {
+	robotsTxt := `
+# Block with multiple user-agents sharing rules
+User-agent: Googlebot
+User-agent: AntigravityBot
+Disallow: /restricted/
+
+# Wildcard block
+User-agent: *
+Disallow: /restricted/
+Disallow: /general-block/
+`
+	rd := ParseRobotsTxt(robotsTxt)
+
+	// AntigravityBot matches specific block: /restricted/ is disallowed, /general-block/ is allowed
+	if rd.IsAllowed("AntigravityBot/1.0", "https://example.com/restricted/doc") != false {
+		t.Errorf("Expected /restricted/doc to be disallowed for AntigravityBot")
+	}
+	if rd.IsAllowed("AntigravityBot/1.0", "https://example.com/general-block/doc") != true {
+		t.Errorf("Expected /general-block/doc to be allowed for AntigravityBot due to higher specificity block")
+	}
+
+	// UnknownBot falls back to wildcard block where /general-block/ is disallowed
+	if rd.IsAllowed("UnknownBot/1.0", "https://example.com/general-block/doc") != false {
+		t.Errorf("Expected /general-block/doc to be disallowed for UnknownBot")
+	}
+}
+
+func TestDomainCacheManager_CapacityAndEviction(t *testing.T) {
+	cm := &DomainCacheManager{
+		cache:      make(map[string]*RobotsData),
+		expiry:     make(map[string]time.Time),
+		maxEntries: 5,
+	}
+
+	for i := 1; i <= 10; i++ {
+		domain := fmt.Sprintf("domain%d.com", i)
+		cm.FetchAndCache(domain, "User-agent: *\nDisallow: /admin")
+	}
+
+	cm.mu.RLock()
+	cacheLen := len(cm.cache)
+	cm.mu.RUnlock()
+
+	if cacheLen > 5 {
+		t.Errorf("Expected cache size bounded at 5, got %d", cacheLen)
+	}
+}
+
+func TestFetchWithStepping_HeaderPropagation(t *testing.T) {
+	var receivedReqID, receivedTraceparent string
+	mockTransport := &mockRoundTripper{
+		fn: func(req *http.Request) (*http.Response, error) {
+			receivedReqID = req.Header.Get("X-Request-ID")
+			receivedTraceparent = req.Header.Get("traceparent")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("OK")),
+				Request:    req,
+			}, nil
+		},
+	}
+
+	client := NewTestClientWithTransport(mockTransport, true)
+	GlobalDomainCache.FetchAndCache("example.com", "User-agent: *\nDisallow:")
+
+	span, ctx := tracing.StartSpan(context.Background(), "test_stepping")
+	ctx = context.WithValue(ctx, middleware.RequestIDKey, "req-step-12345")
+
+	_, err := client.FetchWithStepping(ctx, "https://example.com/test-stepping")
+	if err != nil {
+		t.Fatalf("FetchWithStepping failed: %v", err)
+	}
+
+	if receivedReqID != "req-step-12345" {
+		t.Errorf("Expected X-Request-ID 'req-step-12345', got %q", receivedReqID)
+	}
+	if !strings.HasPrefix(receivedTraceparent, "00-"+span.TraceID) {
+		t.Errorf("Expected traceparent starting with '00-%s', got %q", span.TraceID, receivedTraceparent)
 	}
 }
 

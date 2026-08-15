@@ -14,21 +14,25 @@ import (
 	"github.com/crawler-monorepo/common/logger"
 	"github.com/crawler-monorepo/common/metrics"
 	"github.com/crawler-monorepo/internal/index"
+	"github.com/crawler-monorepo/internal/storage"
 	ckafka "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 )
 
 type TokenizedDocument struct {
-	URL           string              `json:"url"`
-	Title         string              `json:"title"`
-	CleanBody     string              `json:"clean_body"`
-	TermPositions map[string][]int    `json:"term_positions"`
-	TotalTokens   int                 `json:"total_tokens"`
+	URL           string           `json:"url"`
+	Title         string           `json:"title"`
+	CleanBody     string           `json:"clean_body"`
+	TermPositions map[string][]int `json:"term_positions"`
+	TotalTokens   int              `json:"total_tokens"`
 }
 
 func main() {
 	logger.InitLogger(os.Getenv("ENV"))
 	defer logger.Sync()
+
+	storage.InitDB(os.Getenv("DATABASE_URL"))
+	defer storage.CloseDB()
 
 	logger.Log.Info("Starting Indexer Service...")
 	metrics.InitMetricsServer("8086")
@@ -70,7 +74,11 @@ func main() {
 				continue
 			}
 
-			sem <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
 			wg.Add(1)
 			offsetTracker.MarkStarted(msg)
 			go func(m ckafka.Message) {
@@ -82,18 +90,20 @@ func main() {
 					if r := recover(); r != nil {
 						logger.Log.Error("Panic isolated in indexer worker", zap.Any("recover", r))
 					}
+					commitCtx := ctx
+					if ctx.Err() != nil {
+						var cancelCommit context.CancelFunc
+						commitCtx, cancelCommit = context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancelCommit()
+					}
 					if succeeded {
-						commitCtx := ctx
-						if ctx.Err() != nil {
-							var cancelCommit context.CancelFunc
-							commitCtx, cancelCommit = context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancelCommit()
-						}
 						if err := offsetTracker.MarkCompleted(commitCtx, consumer, m); err != nil {
 							logger.Log.Error("Failed to mark offset completed", zap.Error(err), zap.Int64("offset", m.Offset))
 						}
 					} else {
-						offsetTracker.MarkFailed(m)
+						if err := offsetTracker.MarkFailed(commitCtx, consumer, m); err != nil {
+							logger.Log.Error("Failed to mark offset failed", zap.Error(err), zap.Int64("offset", m.Offset))
+						}
 					}
 				}()
 
@@ -115,7 +125,13 @@ func main() {
 					zap.Int("unique_terms", len(tokenizedDoc.TermPositions)))
 
 				// Publish index update notification
-				producer.Publish(ctx, []byte(tokenizedDoc.URL), []byte("indexed"))
+				pubCtx := ctx
+				if ctx.Err() != nil {
+					var cancelPub context.CancelFunc
+					pubCtx, cancelPub = context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancelPub()
+				}
+				producer.Publish(pubCtx, []byte(tokenizedDoc.URL), []byte("indexed"))
 				succeeded = true
 			}(msg)
 		}

@@ -138,3 +138,47 @@ func TestCountBPETokens_SpecialTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertHTMLToMarkdown_NestedTables(t *testing.T) {
+	htmlInput := `<!DOCTYPE html>
+<html>
+<head><title>Nested Table Page</title></head>
+<body>
+    <table id="outer">
+        <thead>
+            <tr><th>OuterCol1</th><th>OuterCol2</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>OuterVal1</td>
+                <td>
+                    <table id="inner">
+                        <tr><th>InnerColA</th><th>InnerColB</th></tr>
+                        <tr><td>InnerValA</td><td>InnerValB</td></tr>
+                    </table>
+                </td>
+            </tr>
+            <tr>
+                <td>OuterVal2</td>
+                <td>OuterVal3</td>
+            </tr>
+        </tbody>
+    </table>
+</body>
+</html>`
+
+	md, _, _ := ConvertHTMLToMarkdown("https://example.com", []byte(htmlInput), "clean_rag")
+
+	if !strings.Contains(md, "| OuterCol1 | OuterCol2 |") {
+		t.Errorf("Expected outer table header row '| OuterCol1 | OuterCol2 |', got:\n%s", md)
+	}
+
+	if !strings.Contains(md, "| InnerColA | InnerColB |") {
+		t.Errorf("Expected inner table header row '| InnerColA | InnerColB |', got:\n%s", md)
+	}
+
+	if strings.Contains(md, "| OuterCol1 | OuterCol2 | InnerColA |") {
+		t.Errorf("Outer table headers corrupted with inner headers:\n%s", md)
+	}
+}
+

@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 )
 
 // HeadlessRenderer defines the interface for dynamic client-side JS rendering engines.
@@ -69,10 +71,15 @@ func (e *FallbackRenderEngine) RenderSPA(ctx context.Context, targetURL string) 
 			if err == nil {
 				req.Header.Set("Content-Type", "application/json")
 				resp, err := http.DefaultClient.Do(req)
-				if err == nil && resp.StatusCode == 200 {
-					body, err := io.ReadAll(resp.Body)
-					resp.Body.Close()
-					if err == nil && len(body) > 0 {
+				if err == nil && resp != nil {
+					body, readErr := func() ([]byte, error) {
+						defer resp.Body.Close()
+						if resp.StatusCode == http.StatusOK {
+							return io.ReadAll(resp.Body)
+						}
+						return nil, fmt.Errorf("playwright service returned HTTP %d", resp.StatusCode)
+					}()
+					if readErr == nil && len(body) > 0 {
 						return string(body), nil
 					}
 				}
@@ -82,18 +89,43 @@ func (e *FallbackRenderEngine) RenderSPA(ctx context.Context, targetURL string) 
 
 	// 3. Headless Chrome CLI (if explicitly configured via CHROME_PATH or ENABLE_HEADLESS_CHROME)
 	if engineType == "chrome" && (os.Getenv("CHROME_PATH") != "" || os.Getenv("ENABLE_HEADLESS_CHROME") == "true") {
+		var lastChromeErr error
+		chromeAttempted := false
 		for _, bin := range []string{os.Getenv("CHROME_PATH"), "google-chrome", "chromium", "chromium-browser", "headless-shell"} {
 			if bin == "" {
 				continue
 			}
 			path, err := exec.LookPath(bin)
 			if err == nil {
+				chromeAttempted = true
 				cmd := exec.CommandContext(ctx, path, "--headless", "--disable-gpu", "--dump-dom", "--no-sandbox", targetURL)
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				cmd.Cancel = func() error {
+					if cmd.Process != nil && cmd.Process.Pid > 0 {
+						return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+					}
+					return nil
+				}
+				var stderrBuf bytes.Buffer
+				cmd.Stderr = &stderrBuf
 				output, err := cmd.Output()
-				if err == nil && len(output) > 0 {
+				if stderrStr := stderrBuf.String(); stderrStr != "" {
+					log.Printf("[RenderEngine] Chrome stderr for %s: %s", targetURL, stderrStr)
+				}
+				if err != nil {
+					lastChromeErr = fmt.Errorf("chrome execution failed (%w): %s", err, stderrBuf.String())
+					continue
+				}
+				if len(output) > 0 {
 					return string(output), nil
 				}
 			}
+		}
+		if chromeAttempted || os.Getenv("CHROME_PATH") != "" || os.Getenv("ENABLE_HEADLESS_CHROME") == "true" {
+			if lastChromeErr != nil {
+				return "", lastChromeErr
+			}
+			return "", fmt.Errorf("chrome execution failed: no valid output produced for %s", targetURL)
 		}
 	}
 

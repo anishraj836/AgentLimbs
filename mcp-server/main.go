@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +20,41 @@ import (
 	"github.com/crawler-monorepo/internal/mcp"
 	"github.com/crawler-monorepo/internal/storage"
 )
+
+const maxLineSize = 10 * 1024 * 1024
+
+var errLineTooLong = errors.New("line length exceeded 10MB")
+
+// readBoundedLine reads a line up to maxBytes from reader using ReadLine.
+// If the line exceeds maxBytes without a newline, it discards remaining bytes until newline or EOF,
+// and returns errLineTooLong.
+func readBoundedLine(reader *bufio.Reader, maxBytes int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			if len(line) == 0 && len(chunk) == 0 {
+				return nil, err
+			}
+			if len(line)+len(chunk) > maxBytes {
+				return nil, errLineTooLong
+			}
+			line = append(line, chunk...)
+			return line, nil
+		}
+		if len(line)+len(chunk) > maxBytes {
+			for isPrefix && err == nil {
+				_, isPrefix, err = reader.ReadLine()
+			}
+			return nil, errLineTooLong
+		}
+		line = append(line, chunk...)
+		if !isPrefix {
+			break
+		}
+	}
+	return line, nil
+}
 
 func main() {
 	cfg, err := config.LoadAndValidate()
@@ -37,7 +75,7 @@ func main() {
 	}
 
 	client := crawler.NewClient()
-	decoder := json.NewDecoder(os.Stdin)
+	reader := bufio.NewReaderSize(os.Stdin, 64*1024)
 
 	for {
 		select {
@@ -47,18 +85,44 @@ func main() {
 		default:
 		}
 
-		var rawMessage json.RawMessage
-		if err := decoder.Decode(&rawMessage); err != nil {
-			if err == io.EOF {
+		line, err := readBoundedLine(reader, maxLineSize)
+		if err != nil {
+			if errors.Is(err, errLineTooLong) {
+				logger.Log.Error("MCP Stdio Read error: line length exceeded 10MB")
+				errResp := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      nil,
+					"error": map[string]interface{}{
+						"code":    -32700,
+						"message": "Parse error: line length exceeded 10MB",
+					},
+				}
+				if respBytes, marshalErr := json.Marshal(errResp); marshalErr == nil {
+					fmt.Println(string(respBytes))
+				}
+				continue
+			}
+			if errors.Is(err, io.EOF) || err == io.EOF {
 				break
 			}
-			logger.Log.Error("MCP Stdio Decode error: " + err.Error())
+			logger.Log.Error("MCP Stdio Read error: " + err.Error())
+			break
+		}
+
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+
+		var rawMessage json.RawMessage
+		if unmarshalErr := json.Unmarshal(trimmed, &rawMessage); unmarshalErr != nil {
+			logger.Log.Error("MCP Stdio Decode error: " + unmarshalErr.Error())
 			errResp := map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      nil,
 				"error": map[string]interface{}{
 					"code":    -32700,
-					"message": "Parse error: " + err.Error(),
+					"message": "Parse error: " + unmarshalErr.Error(),
 				},
 			}
 			if respBytes, marshalErr := json.Marshal(errResp); marshalErr == nil {
@@ -71,9 +135,9 @@ func main() {
 			continue
 		}
 
-		respBytes, err := mcp.HandleRPCMessage(rawMessage, client)
-		if err != nil {
-			logger.Log.Error("MCP RPC processing error: " + err.Error())
+		respBytes, rpcErr := mcp.HandleRPCMessage(rawMessage, client)
+		if rpcErr != nil {
+			logger.Log.Error("MCP RPC processing error: " + rpcErr.Error())
 			continue
 		}
 

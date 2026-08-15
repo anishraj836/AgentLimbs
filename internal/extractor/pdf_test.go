@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestIsPDF(t *testing.T) {
@@ -300,6 +301,20 @@ func TestPDFEnDashAndBullets(t *testing.T) {
 	}
 	if !strings.Contains(bulletClean, "- Second item") {
 		t.Errorf("Expected bullet replaced with '- ', got %q", bulletClean)
+	}
+
+	// Test multi-byte UTF-8 bullet prefixes without byte corruption
+	multiByteBulletsRaw := "• Bullet One\n◦ Bullet Two\n▪ Bullet Three\n* Bullet Four\n- Bullet Five"
+	multiByteClean := cleanExtractedPDFText(multiByteBulletsRaw)
+	expectedClean := "- Bullet One\n- Bullet Two\n- Bullet Three\n- Bullet Four\n- Bullet Five"
+	if multiByteClean != expectedClean {
+		t.Errorf("Multi-byte bullet cleanup mismatch.\nExpected: %q\nGot:      %q", expectedClean, multiByteClean)
+	}
+	if strings.Contains(multiByteClean, "\xa2") {
+		t.Errorf("Corrupted UTF-8 byte 0xa2 found in cleaned text: %q", multiByteClean)
+	}
+	if !utf8.ValidString(multiByteClean) {
+		t.Errorf("Cleaned bullet text is not valid UTF-8: %q", multiByteClean)
 	}
 }
 
