@@ -41,7 +41,7 @@ Most AI agents face a core dilemma when interacting with the web:
 
 ---
 
-## ⚡ Quick Start & Universal CLI
+## ⚡ Quick Start & Universal CLI (LightLimbs)
 
 Install WebLimbAI via the universal 1-line script or build from source:
 
@@ -49,8 +49,8 @@ Install WebLimbAI via the universal 1-line script or build from source:
 # 1-Line Universal Installer (macOS & Linux, detects arm64 / amd64 automatically)
 curl -sSfL https://raw.githubusercontent.com/anishraj836/WebLimbAI/main/scripts/install.sh | sh
 
-# Or build from source:
-go build -o agentlimbs ./cmd/agentlimbs-light
+# Or build LightLimbs from source:
+go build -o lightlimbs ./cmd/lightlimbs
 ```
 
 ### 1-Click AI IDE MCP Setup (Cursor & Claude Desktop)
@@ -58,56 +58,76 @@ Auto-configure your AI editor's Model Context Protocol in **1 second** without e
 
 ```bash
 # Auto-configures both Claude Desktop & Cursor IDE:
-agentlimbs init-mcp
+lightlimbs init-mcp
 
 # Or preview the configuration snippet:
-agentlimbs init-mcp --stdout
+lightlimbs init-mcp --stdout
 ```
 
 ### Terminal Direct Scraping & Search
-Use WebLimbAI directly from your terminal or pipe into standard Unix tools:
+Use LightLimbs directly from your terminal or pipe into standard Unix tools:
 
 ```bash
 # Scrape any web page into clean, token-reduced Markdown:
-agentlimbs scrape https://go.dev/doc/tutorial/getting-started
+lightlimbs scrape https://go.dev/doc/tutorial/getting-started
 
 # Scrape and output structured JSON with token savings (perfect for jq):
-agentlimbs scrape https://go.dev -j | jq .
+lightlimbs scrape https://go.dev -j | jq .
+
+# Recursive adaptive entropy documentation crawl:
+lightlimbs crawl https://docs.docker.com -a -d 2
 
 # Hybrid search (BM25 + Dense Vectors + RRF) across locally indexed pages:
-agentlimbs search "goroutine channel concurrency" --top 5
+lightlimbs search "goroutine channel concurrency" --top 5
 
 # Seed 1,000+ SDE engineering topics into local memory:
-agentlimbs seed
+lightlimbs seed
 
 # Run the background HTTP & MCP API daemon:
-agentlimbs serve --port 8080
+lightlimbs serve --port 8080
 ```
 
 ---
 
-## 🏗️ Architecture & Module Map
+## 🏗️ Dual-Architecture: LightLimbs vs PowerLimbs
 
-WebLimbAI is designed as a **Modular Monolith** with clean separation between indexing data structures and search algorithms:
+WebLimbAI provides two deployment topologies tailored for different scale requirements:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                   WebLimbAI                                     │
+├───────────────────────────────────────┬─────────────────────────────────────────┤
+│          ⚡ LightLimbs Mode           │           🚀 PowerLimbs Mode            │
+│       (Single-Binary Embedded)        │      (Distributed Raft & Kafka)         │
+├───────────────────────────────────────┼─────────────────────────────────────────┤
+│ • Zero external dependencies          │ • Multi-node linear scale               │
+│ • In-memory hybrid search (BM25+V)    │ • Partitioned Raft consensus sharding   │
+│ • Local JSON snapshot persistence     │ • Virtual node consistent hashing ring  │
+│ • 1-Click stdio MCP server for IDEs   │ • Kafka stream-processing pipeline      │
+│ • Memory footprint: ~25 MB            │ • High-availability scatter-gather      │
+│ • Target: Devs, Local LLMs, AI IDEs   │ • Target: High-throughput clusters      │
+└───────────────────────────────────────┴─────────────────────────────────────────┘
+```
 
 ```text
 crawler-monorepo/
 ├── cmd/
-│   ├── agentlimbs-light/    # Lightweight single-binary embedded server & CLI
+│   ├── lightlimbs/          # LightLimbs single-binary embedded server & universal CLI
 │   └── seed_sde_corpus/     # Batch 1,000+ SDE corpus ingestion CLI script
 ├── internal/
-│   ├── crawler/             # Anti-bot HTTP client, Chrome 122 headers, stepping backoff, robots.txt cache
-│   ├── extractor/           # HTML DOM AST parser (golang.org/x/net/html) -> Markdown, JSON field extraction
-│   ├── index/               # Inverted Index (BM25), Trie Autocomplete, Vector Store (Subword N-gram), Embedders
-│   ├── search/              # Hybrid RRF, Candidate Re-ranking, DuckDuckGo Metasearch, DeepSeek Agentic Pipeline
-│   ├── storage/             # PostgreSQL pool, schema migrations, TTL janitor, JSON snapshot file fallback
-│   └── mcp/                 # Model Context Protocol stdio JSON-RPC handler & tool schemas
+│   ├── cluster/             # PowerLimbs: Raft consensus, Consistent Hash Ring, Scatter-Gather
+│   ├── crawler/             # Adaptive entropy priority frontier, anti-bot HTTP client
+│   ├── extractor/           # HTML DOM AST parser (golang.org/x/net/html) -> Markdown, JSON Schema
+│   ├── index/               # Inverted Index (VByte + Block-Max WAND), Quantized Vector Store (Int8)
+│   ├── search/              # Hybrid RRF, Candidate Re-ranking, DuckDuckGo Metasearch, DeepSeek
+│   ├── storage/             # PostgreSQL pool, schema migrations, TTL janitor, JSON snapshot fallback
+│   └── mcp/                 # Model Context Protocol stdio JSON-RPC handler & 1-click configurator
 ├── common/                  # Shared middleware, ratelimit, config, webhook, kafka, logger, stemmer
 ├── mcp-server/              # Model Context Protocol stdio binary entrypoint
-├── agent-service/           # Microservice API server for agent orchestration (Port 8090)
-├── agentlimbs-dashboard/    # Companion Web Dashboard UI (Port 3001)
-├── openapi.json             # OpenAPI 3.0 REST API specification
-└── docker-compose.yml       # Distributed 9-microservice deployment stack
+├── agent-service/           # PowerLimbs: Agent microservice (Port 8090)
+├── search-service/          # PowerLimbs: Search microservice (Port 8088)
+├── indexer-service/         # PowerLimbs: Kafka indexer worker service
+└── docker-compose.yml       # PowerLimbs distributed deployment stack
 ```
 
 ### Module Delineation: Index vs Search
@@ -572,7 +592,7 @@ WebLimbAI includes dedicated benchmarking suites in `scripts/benchmarks/` to mea
 ## 🖥️ CPU, Concurrency & Resource Configuration
 
 ### Default CPU Behavior
-In all production binaries (`agentlimbs-light`, `agent-service`, `search-service`, `indexer-service`, `mcp-server`), **Go automatically utilizes all available CPU cores on the host machine** (e.g. 8, 16, 32, 64 cores) without artificial caps.
+In all production binaries (`lightlimbs`, `agent-service`, `search-service`, `indexer-service`, `mcp-server`), **Go automatically utilizes all available CPU cores on the host machine** (e.g. 8, 16, 32, 64 cores) without artificial caps.
 
 ### How to Configure Resource Limits
 
@@ -583,7 +603,7 @@ Control the number of operating system threads executing Go code:
 
 ```bash
 # Low-impact mode for local laptops / background sidecars:
-GOMAXPROCS=2 ./agentlimbs-light
+GOMAXPROCS=2 ./lightlimbs
 
 # High-throughput mode on production servers:
 GOMAXPROCS=16 ./search-service
@@ -595,7 +615,7 @@ docker run -d \
   --cpus="4.0" \
   --memory="2g" \
   -p 8080:8080 \
-  agentlimbs-light:latest
+  lightlimbs:latest
 ```
 
 #### 3. Via Kubernetes Pod Resource Limits
@@ -615,24 +635,24 @@ resources:
 
 ```mermaid
 graph LR
-    subgraph SingleBinary ["Mode A: Embedded / Sidecar (Recommended)"]
-        L1["agentlimbs-light\n(Single Binary, ~25MB RAM)"]
+    subgraph SingleBinary ["LightLimbs Mode (Embedded & Developer Workstation)"]
+        L1["lightlimbs\n(Single Binary, ~25MB RAM)"]
         M1["agent-limbs-mcp\n(Cursor / Claude Desktop)"]
     end
 
-    subgraph Distributed ["Mode B: Distributed Microservices"]
+    subgraph Distributed ["PowerLimbs Mode (Distributed Raft & Kafka Cluster)"]
         A1["agent-service\n(Scraping)"] --> K1[("Kafka Topic")]
         K1 --> I1["indexer-service\n(Indexing)"]
         I1 --> S1["search-service\n(Search)"]
     end
 ```
 
-| Dimension | **Single-Binary Mode (`agentlimbs-light` / MCP)** | **Distributed Cluster (`agent` + `indexer` + `search`)** |
+| Dimension | **LightLimbs Mode (`lightlimbs` / MCP)** | **PowerLimbs Cluster (`agent` + `indexer` + `search` + `raft`)** |
 | :--- | :--- | :--- |
 | **Best For** | Cursor / Claude / IDE tool calls, Local RAG, Developer Workstations, Startups (<500k docs) | Enterprise multi-tenant crawling platforms (Tavily/Perplexity-style, >500k docs) |
-| **Operational Overhead** | **Zero** (1 static binary, no Docker, no external services) | **High** (Requires Kafka, PostgreSQL, Redis, 3 services) |
-| **Search Latency** | **< 1 ms** (in-process memory lookup) | **~2–4 ms** (network hop to search-service) |
-| **Dependencies** | None (embedded SQLite/JSON snapshot fallback) | PostgreSQL (`pgxpool`), Kafka (KRaft), Redis |
+| **Operational Overhead** | **Zero** (1 static binary, no Docker, no external services) | **Cluster** (Partitioned Raft, Kafka KRaft, PostgreSQL, Redis) |
+| **Search Latency** | **< 1 ms** (in-process memory lookup) | **~2–4 ms** (network hop / scatter-gather coordinator) |
+| **Dependencies** | None (embedded JSON snapshot fallback) | PostgreSQL (`pgxpool`), Kafka (KRaft), Redis |
 
 ---
 

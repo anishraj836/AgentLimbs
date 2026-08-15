@@ -108,7 +108,11 @@ echo "📂 Extracting archive..."
 tar -xzf "$TAR_PATH" -C "$TMP_DIR"
 
 if [ ! -f "$TMP_DIR/$BINARY_NAME" ]; then
-  if [ -f "$TMP_DIR/agentlimbs" ]; then
+  if [ -f "$TMP_DIR/lightlimbs" ]; then
+    mv "$TMP_DIR/lightlimbs" "$TMP_DIR/$BINARY_NAME"
+  elif [ -f "$TMP_DIR/weblimb" ]; then
+    mv "$TMP_DIR/weblimb" "$TMP_DIR/$BINARY_NAME"
+  elif [ -f "$TMP_DIR/agentlimbs" ]; then
     mv "$TMP_DIR/agentlimbs" "$TMP_DIR/$BINARY_NAME"
   elif [ -f "$TMP_DIR/agentlimbs-light" ]; then
     mv "$TMP_DIR/agentlimbs-light" "$TMP_DIR/$BINARY_NAME"

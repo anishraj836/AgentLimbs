@@ -38,8 +38,8 @@
         reverse_proxy search-service:8088
     }
 
-    # Default fallback to agentlimbs-light embedded server (:8080)
+    # Default fallback to LightLimbs embedded server (:8080)
     handle {
-        reverse_proxy agentlimbs-light:8080
+        reverse_proxy lightlimbs:8080
     }
 }

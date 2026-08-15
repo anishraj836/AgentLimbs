@@ -7,7 +7,7 @@ before:
 
 builds:
   - id: weblimb
-    main: ./cmd/agentlimbs-light/main.go
+    main: ./cmd/lightlimbs/main.go
     binary: weblimb
     env:
       - CGO_ENABLED=0

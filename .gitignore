@@ -9,6 +9,8 @@
 bin/
 dist/
 /weblimb
+/lightlimbs
+/powerlimbs
 /agentlimbs
 /agentlimbs-light
 /agent-limbs-mcp

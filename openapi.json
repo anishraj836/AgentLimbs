@@ -1,22 +1,22 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "AgentLimbs API",
+    "title": "WebLimbAI API",
     "description": "High-performance Web Crawler, Hybrid BM25 + Vector RAG Search Engine, DuckDuckGo Metasearch, DeepSeek Agentic Reasoner, and Model Context Protocol (MCP) API Specification.",
-    "version": "1.0.0"
+    "version": "1.5.0"
   },
   "servers": [
     {
       "url": "http://localhost:8080",
-      "description": "Single-Binary Embedded Server (agentlimbs-light)"
+      "description": "LightLimbs Single-Binary Embedded Server"
     },
     {
       "url": "http://localhost:8090",
-      "description": "Agent Microservice (agent-service)"
+      "description": "PowerLimbs Agent Microservice (agent-service)"
     },
     {
       "url": "http://localhost:8088",
-      "description": "Search Microservice (search-service)"
+      "description": "PowerLimbs Search Microservice (search-service)"
     }
   ],
   "security": [

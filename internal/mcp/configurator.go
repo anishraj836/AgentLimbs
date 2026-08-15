@@ -47,7 +47,7 @@ type ConfigResult struct {
 
 // ResolveBinaryPath determines the absolute path to the agentlimbs binary.
 // It detects ephemeral `go run` or `go-build` temporary paths and attempts
-// to look up `agentlimbs` or `agentlimbs-light` in PATH.
+// to look up `lightlimbs`, `weblimb`, or `agentlimbs` in PATH.
 func ResolveBinaryPath(override string) (string, []string) {
 	var warnings []string
 
@@ -60,8 +60,8 @@ func ResolveBinaryPath(override string) (string, []string) {
 
 	execPath, err := os.Executable()
 	if err != nil {
-		warnings = append(warnings, fmt.Sprintf("Unable to determine executable path (%v); defaulting to 'agentlimbs'", err))
-		return "agentlimbs", warnings
+		warnings = append(warnings, fmt.Sprintf("Unable to determine executable path (%v); defaulting to 'lightlimbs'", err))
+		return "lightlimbs", warnings
 	}
 
 	// Resolve symlinks if possible
@@ -77,8 +77,8 @@ func ResolveBinaryPath(override string) (string, []string) {
 		strings.Contains(lowerExec, "\\appdata\\local\\temp\\")
 
 	if isEphemeral {
-		// Attempt to look for installed agentlimbs or agentlimbs-light in PATH
-		candidateNames := []string{"agentlimbs", "agentlimbs-light", "agent-limbs-mcp"}
+		// Attempt to look for installed lightlimbs, weblimb, or agentlimbs in PATH
+		candidateNames := []string{"lightlimbs", "weblimb", "agentlimbs", "agentlimbs-light", "agent-limbs-mcp"}
 		foundInPath := false
 		for _, name := range candidateNames {
 			if lp, lpErr := exec.LookPath(name); lpErr == nil {
