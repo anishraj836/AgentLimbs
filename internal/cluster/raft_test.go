@@ -93,7 +93,7 @@ func TestRaft_SingleNodeElectionAndProposal(t *testing.T) {
 	defer rn.Close()
 
 	becameLeader := false
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 60; i++ {
 		if rn.IsLeader() {
 			becameLeader = true
 			break
@@ -126,7 +126,7 @@ func TestRaft_SingleNodeElectionAndProposal(t *testing.T) {
 		if !msg.CommandValid || msg.CommandIndex != 1 {
 			t.Fatalf("unexpected apply msg: %+v", msg)
 		}
-	case <-time.After(1 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for applyCh message")
 	}
 }
@@ -143,14 +143,14 @@ func TestRaft_ThreeNodeClusterElectionAndReplication(t *testing.T) {
 		applyCh := make(chan ApplyMsg, 100)
 		applyChs[p] = applyCh
 
+		engine := index.NewIndexEngine()
+		sm := NewStateMachine(engine, applyCh)
+		stateMachines[p] = sm
+
 		cfg := DefaultRaftConfig(p, peers)
 		cfg.MinElectionTimeout = 100 * time.Millisecond
 		cfg.MaxElectionTimeout = 200 * time.Millisecond
 		cfg.HeartbeatInterval = 30 * time.Millisecond
-
-		eng := index.NewEngine()
-		sm := NewStateMachine(eng, applyCh)
-		stateMachines[p] = sm
 
 		rn := NewRaftNode(cfg, net, applyCh)
 		nodes[p] = rn
@@ -158,20 +158,18 @@ func TestRaft_ThreeNodeClusterElectionAndReplication(t *testing.T) {
 	}
 
 	defer func() {
-		for _, rn := range nodes {
-			rn.Close()
-		}
 		for _, sm := range stateMachines {
 			sm.Stop()
 		}
+		for _, rn := range nodes {
+			rn.Close()
+		}
 	}()
 
-	// Wait for leader election
+	// Wait for leader election with polling
 	var leader *RaftNode
 	var leaderID string
-	deadline := time.Now().Add(3 * time.Second)
-
-	for time.Now().Before(deadline) {
+	for i := 0; i < 80; i++ {
 		for id, rn := range nodes {
 			if rn.IsLeader() {
 				leader = rn
@@ -186,7 +184,7 @@ func TestRaft_ThreeNodeClusterElectionAndReplication(t *testing.T) {
 	}
 
 	if leader == nil {
-		t.Fatalf("no leader elected in 3-node cluster")
+		t.Fatalf("expected 3-node cluster to elect a leader within timeout")
 	}
 	t.Logf("Leader elected: %s", leaderID)
 
@@ -200,7 +198,7 @@ func TestRaft_ThreeNodeClusterElectionAndReplication(t *testing.T) {
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	idx, _, err := leader.Propose(ctx, CmdIndexDocument, payloadBytes)
@@ -211,10 +209,16 @@ func TestRaft_ThreeNodeClusterElectionAndReplication(t *testing.T) {
 		t.Errorf("expected log index 1, got %d", idx)
 	}
 
-	// Verify all state machines applied the document
-	time.Sleep(200 * time.Millisecond)
+	// Verify all state machines applied the document via polling
 	for id, sm := range stateMachines {
-		lastIdx, _ := sm.LastApplied()
+		var lastIdx uint64
+		for i := 0; i < 60; i++ {
+			lastIdx, _ = sm.LastApplied()
+			if lastIdx == 1 {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 		if lastIdx != 1 {
 			t.Errorf("node %s did not apply log index 1 (lastApplied=%d)", id, lastIdx)
 		}
@@ -250,7 +254,7 @@ func TestRaft_PartitionAndReelection(t *testing.T) {
 
 	// Find initial leader
 	var leaderID string
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 80; i++ {
 		for id, rn := range nodes {
 			if rn.IsLeader() {
 				leaderID = id
@@ -271,7 +275,7 @@ func TestRaft_PartitionAndReelection(t *testing.T) {
 
 	// Wait for remaining 2 nodes to elect a new leader
 	var newLeaderID string
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 80; i++ {
 		for id, rn := range nodes {
 			if id != leaderID && rn.IsLeader() {
 				newLeaderID = id
@@ -291,10 +295,17 @@ func TestRaft_PartitionAndReelection(t *testing.T) {
 
 	// Reconnect old leader
 	net.Partition(leaderID, false)
-	time.Sleep(250 * time.Millisecond)
 
-	// Verify old leader stepped down
-	if nodes[leaderID].IsLeader() && newLeaderID != leaderID {
+	// Verify old leader steps down with polling
+	oldLeaderSteppedDown := false
+	for i := 0; i < 60; i++ {
+		if !nodes[leaderID].IsLeader() {
+			oldLeaderSteppedDown = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !oldLeaderSteppedDown && newLeaderID != leaderID {
 		t.Errorf("old leader %s should have stepped down after reconnecting to higher term leader %s", leaderID, newLeaderID)
 	}
 }

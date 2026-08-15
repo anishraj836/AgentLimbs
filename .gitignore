@@ -8,10 +8,10 @@
 *.out
 bin/
 dist/
-weblimb
-agentlimbs
-agentlimbs-light
-agent-limbs-mcp
+/weblimb
+/agentlimbs
+/agentlimbs-light
+/agent-limbs-mcp
 mcp-server/agent-limbs-mcp
 *.log
 

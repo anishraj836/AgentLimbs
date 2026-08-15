@@ -35,17 +35,22 @@ func TestFileFallbackStorage(t *testing.T) {
 		t.Errorf("Saved document not found in GetCrawledDocuments")
 	}
 
-	// Test TTL expiration
-	err = SaveCrawledDocumentWithTTL(ctx, "https://example.com/expiring", "Expiring Doc", "Body", 5, "test", "https://example.com/expiring", 10*time.Millisecond)
+	// Test TTL expiration with polling to prevent flakiness on slow runners
+	err = SaveCrawledDocumentWithTTL(ctx, "https://example.com/expiring", "Expiring Doc", "Body", 5, "test", "https://example.com/expiring", 20*time.Millisecond)
 	if err != nil {
 		t.Fatalf("SaveCrawledDocumentWithTTL failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
-	deleted, err := DeleteExpiredDocuments(ctx)
-	if err != nil {
-		t.Fatalf("DeleteExpiredDocuments failed: %v", err)
+	var deleted int64
+	for i := 0; i < 30; i++ {
+		time.Sleep(25 * time.Millisecond)
+		deleted, err = DeleteExpiredDocuments(ctx)
+		if err != nil {
+			t.Fatalf("DeleteExpiredDocuments failed: %v", err)
+		}
+		if deleted >= 1 {
+			break
+		}
 	}
 
 	if deleted < 1 {

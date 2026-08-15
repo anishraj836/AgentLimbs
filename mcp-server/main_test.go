@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -39,9 +40,7 @@ func TestLargePayload(t *testing.T) {
 		t.Fatalf("Failed to marshal payload: %v", err)
 	}
 
-	// We'll run the dynamically built agent-limbs-mcp binary
 	cmd := exec.Command(tempBinaryPath)
-
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("Failed to create stdin pipe: %v", err)
@@ -56,27 +55,40 @@ func TestLargePayload(t *testing.T) {
 		t.Fatalf("Failed to start agent-limbs-mcp: %v", err)
 	}
 	defer func() {
-		cmd.Process.Kill()
-		cmd.Wait()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 	}()
 
 	validJSON := `{"jsonrpc":"2.0","id":2,"method":"initialize"}` + "\n"
 
 	go func() {
-		stdin.Write(payloadBytes)
-		stdin.Write([]byte("\n"))
-		time.Sleep(50 * time.Millisecond)
-		stdin.Write([]byte(validJSON))
-		time.Sleep(50 * time.Millisecond)
-		stdin.Close()
+		_, _ = stdin.Write(payloadBytes)
+		_, _ = stdin.Write([]byte("\n"))
+		time.Sleep(100 * time.Millisecond)
+		_, _ = stdin.Write([]byte(validJSON))
+		_ = stdin.Close()
 	}()
 
-	buf := make([]byte, 4096)
-	n, _ := stdout.Read(buf)
-	outStr := string(buf[:n])
+	outChan := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		var lines []string
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+			if strings.Contains(scanner.Text(), "-32700") {
+				break
+			}
+		}
+		outChan <- strings.Join(lines, "\n")
+	}()
 
-	if !strings.Contains(outStr, "-32700") || !strings.Contains(outStr, "line length exceeded 10MB") {
-		t.Errorf("expected line length exceeded 10MB error response, got: %s", outStr)
+	select {
+	case outStr := <-outChan:
+		if !strings.Contains(outStr, "-32700") || !strings.Contains(outStr, "line length exceeded 10MB") {
+			t.Errorf("expected line length exceeded 10MB error response, got: %s", outStr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for MCP response on large payload")
 	}
 }
 
@@ -107,28 +119,40 @@ func TestStdioInvalidJSON_Continues(t *testing.T) {
 		t.Fatalf("Failed to start binary: %v", err)
 	}
 	defer func() {
-		cmd.Process.Kill()
-		cmd.Wait()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 	}()
 
-	// Send invalid JSON line
+	// Send invalid JSON line followed by valid initialize request
 	invalidJSON := "{ bad json \n"
-	// Followed by valid initialize request
 	validJSON := `{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"
 
 	go func() {
-		stdin.Write([]byte(invalidJSON))
-		time.Sleep(50 * time.Millisecond)
-		stdin.Write([]byte(validJSON))
-		time.Sleep(50 * time.Millisecond)
-		stdin.Close()
+		_, _ = stdin.Write([]byte(invalidJSON))
+		time.Sleep(100 * time.Millisecond)
+		_, _ = stdin.Write([]byte(validJSON))
+		_ = stdin.Close()
 	}()
 
-	buf := make([]byte, 4096)
-	n, _ := stdout.Read(buf)
-	output := string(buf[:n])
+	outChan := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		var lines []string
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+			if strings.Contains(scanner.Text(), "-32700") {
+				break
+			}
+		}
+		outChan <- strings.Join(lines, "\n")
+	}()
 
-	if !strings.Contains(output, "-32700") && !strings.Contains(output, "Parse error") {
-		t.Errorf("Expected -32700 Parse error in output, got: %s", output)
+	select {
+	case output := <-outChan:
+		if !strings.Contains(output, "-32700") && !strings.Contains(output, "Parse error") {
+			t.Errorf("Expected -32700 Parse error in output, got: %s", output)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for MCP error response")
 	}
 }

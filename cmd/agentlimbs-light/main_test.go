@@ -296,8 +296,11 @@ func TestCLIScrape_DirectAST(t *testing.T) {
 }
 
 func TestCLIStdoutPurity(t *testing.T) {
-	logger.InitLogger("development")
-	defer logger.Sync()
+	logger.InitLogger("production")
+	defer func() {
+		logger.Sync()
+		logger.InitLogger("development")
+	}()
 
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()

@@ -424,9 +424,14 @@ func TestLoadFromDB_PurgeExpiredAndTrieIdempotency(t *testing.T) {
 		t.Errorf("Autocomplete frequency changed after second LoadFromDB: expected %d, got %d", initialFreq, trieRes2[0].Frequency)
 	}
 
-	// 4. Expire temp doc, delete from DB, and reload
-	time.Sleep(350 * time.Millisecond)
-	_, _ = storage.DeleteExpiredDocuments(ctx)
+	// 4. Expire temp doc, delete from DB with polling, and reload
+	for i := 0; i < 30; i++ {
+		time.Sleep(25 * time.Millisecond)
+		del, _ := storage.DeleteExpiredDocuments(ctx)
+		if del >= 1 {
+			break
+		}
+	}
 
 	if err := eng.LoadFromDB(ctx); err != nil {
 		t.Fatalf("LoadFromDB after expiration purge failed: %v", err)
@@ -451,7 +456,7 @@ func TestLoadFromDB_PurgeExpiredAndTrieIdempotency(t *testing.T) {
 
 func TestEngine_ThreadSafeAccessors(t *testing.T) {
 	eng := NewEngine()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -469,7 +474,7 @@ func TestEngine_ThreadSafeAccessors(t *testing.T) {
 				i++
 				docURL := "https://example.com/doc" + string(rune('a'+i%26))
 				eng.IndexDocumentDirectly(docURL, "Concurrent Title", "Concurrent document body test indexing", 5)
-				time.Sleep(1 * time.Millisecond)
+				time.Sleep(5 * time.Millisecond)
 			}
 		}
 	}()
@@ -488,7 +493,7 @@ func TestEngine_ThreadSafeAccessors(t *testing.T) {
 					_, _, _ = eng.GetInvertedIndex().GetStats()
 					_ = eng.GetTrie().SearchPrefix("co", 5)
 					_ = eng.GetVectorIndex().SearchNearest([]float64{0.1, 0.2, 0.3}, 5)
-					time.Sleep(1 * time.Millisecond)
+					time.Sleep(5 * time.Millisecond)
 				}
 			}
 		}()

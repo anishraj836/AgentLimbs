@@ -283,11 +283,18 @@ func TestMetasearchAdapter_CancelledCallerReturnsImmediately(t *testing.T) {
 }
 
 func TestMetasearchAdapter_NilHTTPClientFallback(t *testing.T) {
+	mockDDGServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><div class="result"><a class="result__a" href="https://example.com/test">Title</a></div></body></html>`))
+	}))
+	defer mockDDGServer.Close()
+
 	eng := index.NewIndexEngine()
 	adapter := NewMetasearchAdapter(eng).
+		WithBaseURL(mockDDGServer.URL).
 		WithHTTPClient(nil).
 		WithCrawlerClient(nil)
 
-	// Should not panic even if httpClient is nil
+	// Should not panic even if httpClient is nil, and uses mock server instead of real internet
 	_, _ = adapter.QueryDuckDuckGo(context.Background(), "test")
 }
