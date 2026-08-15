@@ -47,7 +47,7 @@ Install AgentLimbs via the universal 1-line script or build from source:
 
 ```bash
 # 1-Line Universal Installer (macOS & Linux, detects arm64 / amd64 automatically)
-curl -sSfL https://raw.githubusercontent.com/anishraj836/AgentLimbs/main/scripts/install.sh | sh
+curl -sSfL https://raw.githubusercontent.com/anishraj836/WebLimbAI/main/scripts/install.sh | sh
 
 # Or build from source:
 go build -o agentlimbs ./cmd/agentlimbs-light

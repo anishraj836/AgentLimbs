@@ -2,11 +2,11 @@
 set -e
 
 # ==============================================================================
-# AgentLimbs Universal 1-Line Installer (macOS & Linux)
-# Usage: curl -fsSL https://raw.githubusercontent.com/anishraj836/AgentLimbs/main/scripts/install.sh | sh
+# WebLimbAI Universal 1-Line Installer (macOS & Linux)
+# Usage: curl -fsSL https://raw.githubusercontent.com/anishraj836/WebLimbAI/main/scripts/install.sh | sh
 # ==============================================================================
 
-REPO="anishraj836/AgentLimbs"
+REPO="anishraj836/WebLimbAI"
 BINARY_NAME="agentlimbs"
 
 # 1. OS & Architecture Detection
