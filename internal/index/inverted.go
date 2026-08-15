@@ -227,12 +227,42 @@ func (idx *InvertedIndex) LoadSnapshot(filePath string) error {
 	} else {
 		idx.postings = snap.Postings
 	}
-	if snap.DocLengths == nil {
-		idx.docLengths = make(map[string]int)
-	} else {
-		idx.docLengths = snap.DocLengths
-	}
 	idx.totalDocLength = snap.TotalDocLength
 	idx.totalDocuments = snap.TotalDocuments
 	return nil
 }
+
+// DeleteDocument removes a document from the inverted index postings and docLengths.
+func (idx *InvertedIndex) DeleteDocument(docID string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	length, exists := idx.docLengths[docID]
+	if !exists {
+		return
+	}
+	delete(idx.docLengths, docID)
+	idx.totalDocuments--
+	idx.totalDocLength -= int64(length)
+	if idx.totalDocLength < 0 {
+		idx.totalDocLength = 0
+	}
+	if idx.totalDocuments < 0 {
+		idx.totalDocuments = 0
+	}
+
+	for term, pl := range idx.postings {
+		if idxPos, found := pl.docIndex[docID]; found {
+			delete(pl.docIndex, docID)
+			pl.Entries = append(pl.Entries[:idxPos], pl.Entries[idxPos+1:]...)
+			pl.DocumentFrequency = len(pl.Entries)
+			for i, entry := range pl.Entries {
+				pl.docIndex[entry.DocID] = i
+			}
+			if len(pl.Entries) == 0 {
+				delete(idx.postings, term)
+			}
+		}
+	}
+}
+

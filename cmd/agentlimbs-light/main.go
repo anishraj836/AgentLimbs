@@ -31,6 +31,7 @@ import (
 	"github.com/crawler-monorepo/common/tracing"
 	"github.com/crawler-monorepo/common/utils"
 	"github.com/crawler-monorepo/internal/auth"
+	"github.com/crawler-monorepo/internal/cluster"
 	"github.com/crawler-monorepo/internal/crawler"
 	"github.com/crawler-monorepo/internal/extractor"
 	"github.com/crawler-monorepo/internal/index"
@@ -88,9 +89,11 @@ func triggerDebouncedSave(dataDir string) {
 }
 
 type EmbeddedServer struct {
-	httpClient *crawler.Client
-	jobManager *crawler.JobManager
-	dataDir    string
+	httpClient   *crawler.Client
+	jobManager   *crawler.JobManager
+	dataDir      string
+	clusterCoord *cluster.ClusterCoordinator
+	raftNode     *cluster.RaftNode
 }
 
 func NewEmbeddedServer(dataDir string) *EmbeddedServer {
@@ -109,6 +112,11 @@ func NewEmbeddedServerWithClient(dataDir string, httpClient *crawler.Client) *Em
 		jobManager: crawler.NewJobManager(httpClient, dataDir),
 		dataDir:    dataDir,
 	}
+}
+
+func (s *EmbeddedServer) SetCluster(coord *cluster.ClusterCoordinator, raftNode *cluster.RaftNode) {
+	s.clusterCoord = coord
+	s.raftNode = raftNode
 }
 
 func (s *EmbeddedServer) JobManager() *crawler.JobManager {
@@ -260,10 +268,13 @@ type SearchRequest struct {
 }
 
 type SearchResponse struct {
-	Query     string                   `json:"query"`
-	LatencyMs float64                  `json:"latency_ms"`
-	TotalHits int                      `json:"total_hits"`
-	Results   []search.HybridSearchHit `json:"results"`
+	Query           string                   `json:"query"`
+	LatencyMs       float64                  `json:"latency_ms"`
+	TotalHits       int                      `json:"total_hits"`
+	Results         []search.HybridSearchHit `json:"results"`
+	Degraded        bool                     `json:"degraded,omitempty"`
+	ShardsQueried   int                      `json:"shards_queried,omitempty"`
+	ShardsResponded int                      `json:"shards_responded,omitempty"`
 }
 
 func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +303,17 @@ func (s *EmbeddedServer) SearchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TopK > 100 {
 		req.TopK = 100
+	}
+
+	// Cluster Scatter-Gather delegation
+	if s.clusterCoord != nil && req.Mode != "bm25" && req.Mode != "vector" {
+		clusterResp, err := s.clusterCoord.ScatterGatherSearch(r.Context(), req.Query, req.TopK)
+		if err == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(clusterResp)
+			return
+		}
 	}
 
 	titles, urls, bodies := index.GlobalEngine.GetMetadataMaps()
@@ -682,6 +704,9 @@ func (s *EmbeddedServer) SetupRouter() http.Handler {
 		r.Post("/v1/extract/schema", s.SchemaExtractHandler)
 	})
 
+	// Mount cluster & Raft RPC routes
+	cluster.RegisterClusterHTTPHandlers(r, s.raftNode, s.clusterCoord)
+
 	return r
 }
 
@@ -815,13 +840,15 @@ Run 'weblimb <subcommand> --help' for details on each subcommand.
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-
 	port := fs.String("port", "", "HTTP port to bind (default 8080 or PORT env)")
 	fs.StringVar(port, "p", "", "HTTP port to bind (shorthand)")
 	dataDir := fs.String("data-dir", "", "Data directory for snapshots (default 'data' or DATA_DIR env)")
 	fs.StringVar(dataDir, "d", "", "Data directory (shorthand)")
 	mcpMode := fs.Bool("mcp", false, "Start in stdio MCP server mode")
 	_ = fs.Bool("readonly", false, "Start in readonly mode")
+	clusterPeers := fs.String("cluster-peers", "", "Comma-separated peer URLs/hosts for distributed cluster")
+	nodeID := fs.String("node-id", "", "Cluster node ID (default 'node-<port>')")
+	shards := fs.Int("shards", 16, "Number of cluster partition shards (default 16)")
 
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -857,6 +884,56 @@ func runServe(args []string) {
 	initStorage(rootCtx, *dataDir)
 
 	server := NewEmbeddedServer(*dataDir)
+
+	var raftNode *cluster.RaftNode
+	var coord *cluster.ClusterCoordinator
+	var stateMachine *cluster.StateMachine
+
+	if *clusterPeers != "" || os.Getenv("CLUSTER_PEERS") != "" {
+		peersRaw := *clusterPeers
+		if peersRaw == "" {
+			peersRaw = os.Getenv("CLUSTER_PEERS")
+		}
+		peerList := strings.Split(peersRaw, ",")
+		var cleanPeers []string
+		endpointMap := make(map[string]string)
+		for _, p := range peerList {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				cleanPeers = append(cleanPeers, trimmed)
+				endpointMap[trimmed] = trimmed
+			}
+		}
+
+		if *nodeID == "" {
+			*nodeID = os.Getenv("NODE_ID")
+			if *nodeID == "" {
+				*nodeID = "node-" + *port
+			}
+		}
+
+		ring := cluster.NewHashRing(128)
+		ring.AddNode(*nodeID)
+		for _, p := range cleanPeers {
+			ring.AddNode(p)
+		}
+
+		transport := cluster.NewHTTPRaftTransport(endpointMap)
+		applyCh := make(chan cluster.ApplyMsg, 1000)
+
+		raftCfg := cluster.DefaultRaftConfig(*nodeID, cleanPeers)
+		raftNode = cluster.NewRaftNode(raftCfg, transport, applyCh)
+		stateMachine = cluster.NewStateMachine(index.GlobalEngine, applyCh)
+		coord = cluster.NewClusterCoordinator(*nodeID, ring, raftNode, index.GlobalEngine, transport, *shards)
+
+		server.SetCluster(coord, raftNode)
+		logger.Log.Info("Distributed Raft Cluster mode initialized",
+			zap.String("node_id", *nodeID),
+			zap.Int("peers", len(cleanPeers)),
+			zap.Int("shards", *shards),
+		)
+	}
+
 	router := server.SetupRouter()
 
 	httpServer := &http.Server{
@@ -868,7 +945,7 @@ func runServe(args []string) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	logger.Log.Info("AgentLimbs Light Single-Binary Server starting on port " + *port)
+	logger.Log.Info("WebLimbAI Server starting on port " + *port)
 
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -881,12 +958,18 @@ func runServe(args []string) {
 	<-stop
 
 	logger.Log.Info("Shutting down server gracefully...")
-	rootCancel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := httpServer.Shutdown(ctx); err != nil {
-		logger.Log.Error("Server forced to shutdown", zap.Error(err))
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Log.Error("Server shutdown error", zap.Error(err))
+	}
+
+	if raftNode != nil {
+		raftNode.Close()
+	}
+	if stateMachine != nil {
+		stateMachine.Stop()
 	}
 
 	saveStorage(*dataDir)

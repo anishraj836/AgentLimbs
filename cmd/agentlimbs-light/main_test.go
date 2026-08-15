@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/crawler-monorepo/common/logger"
+	"github.com/crawler-monorepo/internal/cluster"
 	"github.com/crawler-monorepo/internal/crawler"
 )
 
@@ -508,4 +509,62 @@ func TestCLICrawlAndExtract(t *testing.T) {
 
 	runExtractWithClient(client, []string{ts.URL + "/", "--schema", schemaFile, "--json"})
 }
+
+func TestClusterServer_Integration(t *testing.T) {
+	tmpDir1 := t.TempDir()
+	ring := cluster.NewHashRing(128)
+	ring.AddNode("node-1")
+	ring.AddNode("node-2")
+
+	coord1 := cluster.NewClusterCoordinator("node-1", ring, nil, nil, nil, 16)
+	server1 := NewEmbeddedServer(tmpDir1)
+	server1.SetCluster(coord1, nil)
+	router1 := server1.SetupRouter()
+	ts1 := httptest.NewServer(router1)
+	defer ts1.Close()
+
+	tmpDir2 := t.TempDir()
+	server2 := NewEmbeddedServer(tmpDir2)
+
+	transport := cluster.NewHTTPRaftTransport(map[string]string{
+		"node-1": ts1.URL,
+	})
+
+	coord2 := cluster.NewClusterCoordinator("node-2", ring, nil, nil, transport, 16)
+	server2.SetCluster(coord2, nil)
+	router2 := server2.SetupRouter()
+	ts2 := httptest.NewServer(router2)
+	defer ts2.Close()
+
+	// 1. Ingest document directly onto node 1
+	ts1ScrapeReq, _ := http.NewRequest("POST", "/cluster/search", bytes.NewReader([]byte(`{"query":"cluster distributed","top_k":5}`)))
+	rec1 := httptest.NewRecorder()
+	router1.ServeHTTP(rec1, ts1ScrapeReq)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected /cluster/search HTTP 200, got %d", rec1.Code)
+	}
+
+	// 2. Query node 2 via /v1/search and verify scatter-gather
+	searchReq, _ := json.Marshal(map[string]interface{}{
+		"query": "cluster distributed",
+		"top_k": 5,
+	})
+	req2, _ := http.NewRequest("POST", "/v1/search", bytes.NewReader(searchReq))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	router2.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected /v1/search HTTP 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var resp SearchResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed decoding SearchResponse: %v", err)
+	}
+	if resp.ShardsQueried != 2 {
+		t.Errorf("expected 2 shards queried, got %d", resp.ShardsQueried)
+	}
+}
+
 

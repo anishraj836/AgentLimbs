@@ -354,3 +354,26 @@ func (e *Engine) SearchVector(query string, topK int) []VectorSearchResult {
 	}
 	return vectorIdx.SearchNearest(queryVec, topK)
 }
+
+// DeleteDocument removes a document from the local metadata shards, inverted index, and vector index.
+func (e *Engine) DeleteDocument(docURL string) {
+	shard := e.getShard(docURL)
+	shard.mu.Lock()
+	delete(shard.titles, docURL)
+	delete(shard.urls, docURL)
+	delete(shard.bodies, docURL)
+	shard.mu.Unlock()
+
+	e.mu.RLock()
+	inv := e.Inverted
+	vectorIdx := e.Vector
+	e.mu.RUnlock()
+
+	if inv != nil {
+		inv.DeleteDocument(docURL)
+	}
+	if vectorIdx != nil {
+		vectorIdx.DeleteVector(docURL)
+	}
+}
+
