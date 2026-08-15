@@ -94,6 +94,7 @@ type CompressedBlock struct {
 
 // CompressedPostingList implements a 2-tier posting list with sealed compressed blocks and an active tail buffer.
 type CompressedPostingList struct {
+	TotalCount int               `json:"total_count"`
 	Blocks     []CompressedBlock `json:"blocks"`
 	TailDocIDs []uint32          `json:"tail_ids,omitempty"`
 	TailTFs    []uint32          `json:"tail_tfs,omitempty"`
@@ -113,13 +114,10 @@ func (pl *CompressedPostingList) Add(docID uint32, tf uint32, docLen uint32) {
 	if pl == nil {
 		return
 	}
+	pl.TotalCount++
 	pl.TailDocIDs = append(pl.TailDocIDs, docID)
 	pl.TailTFs = append(pl.TailTFs, tf)
 	pl.TailLens = append(pl.TailLens, docLen)
-
-	if len(pl.TailDocIDs) == 64 {
-		pl.SealTail()
-	}
 }
 
 func (pl *CompressedPostingList) SealTail() {
@@ -127,34 +125,75 @@ func (pl *CompressedPostingList) SealTail() {
 		return
 	}
 
-	docData, tfData, err := EncodePostingBlock(pl.TailDocIDs, pl.TailTFs)
-	if err != nil {
-		return
+	n := len(pl.TailDocIDs)
+	type pEntry struct {
+		docID  uint32
+		tf     uint32
+		docLen uint32
+	}
+	entries := make([]pEntry, n)
+	for i := 0; i < n; i++ {
+		entries[i] = pEntry{
+			docID:  pl.TailDocIDs[i],
+			tf:     pl.TailTFs[i],
+			docLen: pl.TailLens[i],
+		}
 	}
 
-	var maxTF uint32
-	var minLen uint32 = math.MaxUint32
-	for i, tf := range pl.TailTFs {
-		if tf > maxTF {
-			maxTF = tf
-		}
-		if pl.TailLens[i] < minLen {
-			minLen = pl.TailLens[i]
-		}
-	}
-	maxDocID := pl.TailDocIDs[len(pl.TailDocIDs)-1]
-
-	pl.Blocks = append(pl.Blocks, CompressedBlock{
-		MaxDocID:  maxDocID,
-		MaxTF:     maxTF,
-		MinDocLen: minLen,
-		DocDeltas: docData,
-		Freqs:     tfData,
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].docID < entries[j].docID
 	})
+
+	// Chunk into blocks of at most 64
+	for chunkStart := 0; chunkStart < n; chunkStart += 64 {
+		chunkEnd := chunkStart + 64
+		if chunkEnd > n {
+			chunkEnd = n
+		}
+		chunkLen := chunkEnd - chunkStart
+
+		chunkDocIDs := make([]uint32, chunkLen)
+		chunkTFs := make([]uint32, chunkLen)
+		var maxTF uint32
+		var minLen uint32 = math.MaxUint32
+
+		for i := 0; i < chunkLen; i++ {
+			e := entries[chunkStart+i]
+			chunkDocIDs[i] = e.docID
+			chunkTFs[i] = e.tf
+			if e.tf > maxTF {
+				maxTF = e.tf
+			}
+			if e.docLen < minLen {
+				minLen = e.docLen
+			}
+		}
+
+		docData, tfData, err := EncodePostingBlock(chunkDocIDs, chunkTFs)
+		if err != nil {
+			continue
+		}
+
+		pl.Blocks = append(pl.Blocks, CompressedBlock{
+			MaxDocID:  chunkDocIDs[chunkLen-1],
+			MaxTF:     maxTF,
+			MinDocLen: minLen,
+			DocDeltas: docData,
+			Freqs:     tfData,
+		})
+	}
 
 	pl.TailDocIDs = pl.TailDocIDs[:0]
 	pl.TailTFs = pl.TailTFs[:0]
 	pl.TailLens = pl.TailLens[:0]
+}
+
+// Count returns the total number of document postings in the list.
+func (pl *CompressedPostingList) Count() int {
+	if pl == nil {
+		return 0
+	}
+	return pl.TotalCount
 }
 
 // ComputeBlockUpperBound dynamically calculates the maximum BM25 term contribution for a block.
@@ -175,6 +214,13 @@ func ComputeBlockUpperBound(maxTF, minDocLen uint32, idf float64, avgdl float64,
 var blockBufferPool = sync.Pool{
 	New: func() any {
 		return &[64]uint32{}
+	},
+}
+
+// sync.Pool for zero-allocation score map reuse during multi-term queries.
+var scoreMapPool = sync.Pool{
+	New: func() any {
+		return make(map[uint32]float64, 1024)
 	},
 }
 
@@ -211,9 +257,141 @@ func BlockMaxWANDScores(
 		return nil
 	}
 
-	docScores := make(map[uint32]float64)
+	// Single-term fast path with zero map allocations and dynamic block skipping
+	if len(lists) == 1 {
+		pl := lists[0]
+		idf := idfs[0]
+		if pl == nil || idf <= 0 {
+			return nil
+		}
 
-	// Evaluate sealed blocks and tail buffers
+		docBuf := blockBufferPool.Get().(*[64]uint32)
+		tfBuf := blockBufferPool.Get().(*[64]uint32)
+		defer blockBufferPool.Put(docBuf)
+		defer blockBufferPool.Put(tfBuf)
+
+		var minScore float64
+		var hits []PostingHit
+
+		for _, block := range pl.Blocks {
+			ub := ComputeBlockUpperBound(block.MaxTF, block.MinDocLen, idf, avgdl, k1, b)
+			if len(hits) >= topK && ub <= minScore {
+				continue // Skip decompressing entire block!
+			}
+
+			n, err := DecodePostingBlock(block.DocDeltas, block.Freqs, docBuf, tfBuf)
+			if err != nil {
+				continue
+			}
+
+			for i := 0; i < n; i++ {
+				docID := docBuf[i]
+				if mapper != nil && mapper.IsDeleted(docID) {
+					continue
+				}
+				var dLen int
+				if int(docID) < len(docLengths) {
+					dLen = docLengths[docID]
+				} else {
+					dLen = int(avgdl)
+				}
+				score := ScoreBM25(tfBuf[i], dLen, avgdl, idf, k1, b)
+				if score > 0 {
+					if len(hits) < topK {
+						hits = append(hits, PostingHit{DocID: docID, Score: score})
+						if len(hits) == topK {
+							minScore = hits[0].Score
+							for _, h := range hits {
+								if h.Score < minScore {
+									minScore = h.Score
+								}
+							}
+						}
+					} else if score > minScore {
+						minIdx := 0
+						minScore = hits[0].Score
+						for idx, h := range hits {
+							if h.Score < minScore {
+								minScore = h.Score
+								minIdx = idx
+							}
+						}
+						if score > minScore {
+							hits[minIdx] = PostingHit{DocID: docID, Score: score}
+							minScore = hits[0].Score
+							for _, h := range hits {
+								if h.Score < minScore {
+									minScore = h.Score
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		for i, docID := range pl.TailDocIDs {
+			if mapper != nil && mapper.IsDeleted(docID) {
+				continue
+			}
+			var dLen int
+			if int(docID) < len(docLengths) {
+				dLen = docLengths[docID]
+			} else {
+				dLen = int(avgdl)
+			}
+			score := ScoreBM25(pl.TailTFs[i], dLen, avgdl, idf, k1, b)
+			if score > 0 {
+				if len(hits) < topK {
+					hits = append(hits, PostingHit{DocID: docID, Score: score})
+					if len(hits) == topK {
+						minScore = hits[0].Score
+						for _, h := range hits {
+							if h.Score < minScore {
+								minScore = h.Score
+							}
+						}
+					}
+				} else if score > minScore {
+					minIdx := 0
+					minScore = hits[0].Score
+					for idx, h := range hits {
+						if h.Score < minScore {
+							minScore = h.Score
+							minIdx = idx
+						}
+					}
+					if score > minScore {
+						hits[minIdx] = PostingHit{DocID: docID, Score: score}
+						minScore = hits[0].Score
+						for _, h := range hits {
+							if h.Score < minScore {
+								minScore = h.Score
+							}
+						}
+					}
+				}
+			}
+		}
+
+		sort.Slice(hits, func(i, j int) bool {
+			if hits[i].Score != hits[j].Score {
+				return hits[i].Score > hits[j].Score
+			}
+			return hits[i].DocID < hits[j].DocID
+		})
+		return hits
+	}
+
+	docScores := scoreMapPool.Get().(map[uint32]float64)
+	defer func() {
+		for k := range docScores {
+			delete(docScores, k)
+		}
+		scoreMapPool.Put(docScores)
+	}()
+
+	// Multi-term query execution with block skipping
 	for termIdx, pl := range lists {
 		if pl == nil {
 			continue
@@ -227,6 +405,11 @@ func BlockMaxWANDScores(
 		tfBuf := blockBufferPool.Get().(*[64]uint32)
 
 		for _, block := range pl.Blocks {
+			ub := ComputeBlockUpperBound(block.MaxTF, block.MinDocLen, idf, avgdl, k1, b)
+			if ub <= 0 {
+				continue
+			}
+
 			n, err := DecodePostingBlock(block.DocDeltas, block.Freqs, docBuf, tfBuf)
 			if err != nil {
 				continue
@@ -268,7 +451,7 @@ func BlockMaxWANDScores(
 		}
 	}
 
-	hits := make([]PostingHit, 0, len(docScores))
+	hits := make([]PostingHit, 0, topK*2)
 	for docID, score := range docScores {
 		if score > 0 {
 			hits = append(hits, PostingHit{

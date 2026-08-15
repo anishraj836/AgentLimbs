@@ -484,6 +484,160 @@ func (vi *VectorIndex) SearchNearest(queryVector []float64, topK int) []VectorSe
 	return results
 }
 
+// GetSimilarity computes the similarity score of a specific document vector against a query.
+func (vi *VectorIndex) GetSimilarity(docID string, queryVector []float64) (float64, bool) {
+	if vi == nil {
+		return 0.0, false
+	}
+	vi.mu.RLock()
+	defer vi.mu.RUnlock()
+
+	if len(queryVector) != vi.dimensions {
+		return 0.0, false
+	}
+
+	switch vi.precision {
+	case PrecisionInt8:
+		qv, exists := vi.i8Vectors[docID]
+		if !exists {
+			return 0.0, false
+		}
+		q32 := make([]float32, len(queryVector))
+		for i, val := range queryVector {
+			q32[i] = float32(val)
+		}
+		normQ, err := NormalizeL2Float32(q32)
+		if err != nil {
+			return 0.0, false
+		}
+		sim := DotProductInt8(normQ, qv)
+		return math.Round(float64(sim)*10000) / 10000, true
+
+	case PrecisionFloat64:
+		vec, exists := vi.f64Vectors[docID]
+		if !exists {
+			return 0.0, false
+		}
+		normQ, err := NormalizeL2Float64(queryVector)
+		if err != nil {
+			return 0.0, false
+		}
+		var dot float64
+		for i := 0; i < len(normQ); i++ {
+			dot += normQ[i] * vec[i]
+		}
+		return math.Round(dot*10000) / 10000, true
+
+	default: // Float32
+		vec, exists := vi.f32Vectors[docID]
+		if !exists {
+			return 0.0, false
+		}
+		q32 := make([]float32, len(queryVector))
+		for i, val := range queryVector {
+			q32[i] = float32(val)
+		}
+		normQ, err := NormalizeL2Float32(q32)
+		if err != nil {
+			return 0.0, false
+		}
+		sim := DotProductFloat32(normQ, vec)
+		return math.Round(float64(sim)*10000) / 10000, true
+	}
+}
+
+// SearchSubset computes vector similarity exclusively on a specified candidate subset.
+func (vi *VectorIndex) SearchSubset(queryVector []float64, candidateDocIDs []string, topK int) []VectorSearchResult {
+	if vi == nil || len(candidateDocIDs) == 0 || topK <= 0 {
+		return nil
+	}
+	vi.mu.RLock()
+	defer vi.mu.RUnlock()
+
+	if len(queryVector) != vi.dimensions {
+		return nil
+	}
+
+	var results []VectorSearchResult
+
+	switch vi.precision {
+	case PrecisionInt8:
+		q32 := make([]float32, len(queryVector))
+		for i, val := range queryVector {
+			q32[i] = float32(val)
+		}
+		normQ, err := NormalizeL2Float32(q32)
+		if err != nil {
+			return nil
+		}
+
+		for _, docID := range candidateDocIDs {
+			if qv, exists := vi.i8Vectors[docID]; exists {
+				sim := DotProductInt8(normQ, qv)
+				if sim > 0 {
+					results = append(results, VectorSearchResult{
+						DocID:      docID,
+						Similarity: math.Round(float64(sim)*10000) / 10000,
+					})
+				}
+			}
+		}
+
+	case PrecisionFloat64:
+		normQ, err := NormalizeL2Float64(queryVector)
+		if err != nil {
+			return nil
+		}
+
+		for _, docID := range candidateDocIDs {
+			if vec, exists := vi.f64Vectors[docID]; exists {
+				var dot float64
+				for i := 0; i < len(normQ); i++ {
+					dot += normQ[i] * vec[i]
+				}
+				if dot > 0 {
+					results = append(results, VectorSearchResult{
+						DocID:      docID,
+						Similarity: math.Round(dot*10000) / 10000,
+					})
+				}
+			}
+		}
+
+	default: // Float32
+		q32 := make([]float32, len(queryVector))
+		for i, val := range queryVector {
+			q32[i] = float32(val)
+		}
+		normQ, err := NormalizeL2Float32(q32)
+		if err != nil {
+			return nil
+		}
+
+		for _, docID := range candidateDocIDs {
+			if vec, exists := vi.f32Vectors[docID]; exists {
+				sim := DotProductFloat32(normQ, vec)
+				if sim > 0 {
+					results = append(results, VectorSearchResult{
+						DocID:      docID,
+						Similarity: math.Round(float64(sim)*10000) / 10000,
+					})
+				}
+			}
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Similarity > results[j].Similarity
+	})
+
+	if len(results) > topK {
+		results = results[:topK]
+	}
+
+	return results
+}
+
 type vectorSnapshot struct {
 	Dimensions       int                        `json:"dimensions"`
 	Precision        VectorPrecision            `json:"precision,omitempty"`
