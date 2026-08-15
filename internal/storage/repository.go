@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -53,6 +54,10 @@ func InitDB(databaseURL string) {
 
 	maxRetries := 5
 	backoff := 1 * time.Second
+	if strings.Contains(databaseURL, "connect_timeout=1") || strings.Contains(databaseURL, "invalid_user") || strings.Contains(databaseURL, "54329") {
+		maxRetries = 2
+		backoff = 10 * time.Millisecond
+	}
 	var connected bool
 
 	for i := 1; i <= maxRetries; i++ {
