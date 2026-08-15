@@ -789,7 +789,7 @@ Usage:
 Available Subcommands:
   serve                               Run HTTP REST API server or stdio MCP server (Default)
   scrape <url>                        Direct DOM AST extraction to Markdown / JSON
-  crawl <url>                         Recursive whole-domain BFS crawling and indexing
+  crawl <url>                         Recursive whole-domain BFS & adaptive entropy crawling
   extract <url> --schema <file.json>  Schema-guided structured LLM extraction
   search "<query>"                    Hybrid BM25 + Vector + RRF search from local index
   init-mcp                            1-Click AI IDE auto-configurator (Claude Desktop & Cursor)
@@ -801,7 +801,7 @@ Examples:
   agentlimbs serve --port 9090                          # Starts HTTP server on port 9090
   agentlimbs serve --mcp                                # Starts stdio Model Context Protocol server
   agentlimbs scrape https://go.dev -j                   # Scrapes URL and prints structured JSON
-  agentlimbs crawl https://docs.docker.com --depth 2    # Crawls domain up to depth 2
+  agentlimbs crawl https://docs.docker.com -a -d 2      # Adaptive entropy-guided documentation crawl
   agentlimbs extract https://example.com --schema s.json# Structured JSON extraction with schema
   agentlimbs search "GMP Scheduler"                     # Searches local indexed documents
   agentlimbs init-mcp                                   # Configures Claude Desktop & Cursor MCP JSON
@@ -1666,6 +1666,9 @@ func runCrawlWithClient(client *crawler.Client, args []string) {
 	jsonOut := fs.Bool("json", false, "Output structured JSON summary")
 	fs.BoolVar(jsonOut, "j", false, "Output JSON (shorthand)")
 	asyncMode := fs.Bool("async", false, "Run crawl job asynchronously in background")
+	adaptive := fs.Bool("adaptive", false, "Enable information-entropy adaptive priority crawl")
+	fs.BoolVar(adaptive, "a", false, "Adaptive crawl (shorthand)")
+	minPriority := fs.Float64("min-priority", 0.10, "Minimum entropy priority threshold for adaptive crawl")
 	dataDir := fs.String("data-dir", "data", "Snapshot data directory")
 
 	posArgs, err := parseInterleavedFlags(fs, args)
@@ -1709,6 +1712,8 @@ func runCrawlWithClient(client *crawler.Client, args []string) {
 		RateLimitRPS:     *rateLimit,
 		Async:            *asyncMode,
 		AllowLoopback:    allowLoopback,
+		Adaptive:         *adaptive,
+		MinPriority:      *minPriority,
 	}
 
 	job, err := jm.StartCrawl(context.Background(), req)

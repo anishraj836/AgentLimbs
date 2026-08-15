@@ -184,3 +184,57 @@ func TestJobManager_TTLEviction(t *testing.T) {
 		t.Errorf("expected job to be evicted after TTL expiration")
 	}
 }
+
+func TestJobManager_AdaptivePriorityCrawl(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprintf(w, `<html><body><h1>Home</h1>
+<a href="/login">Sign In</a>
+<a href="/doc/api">API Reference</a>
+<a href="/archive/v1/page1">Old Archive 1</a>
+<a href="/archive/v1/page2">Old Archive 2</a>
+<a href="/archive/v1/page3">Old Archive 3</a>
+</body></html>`)
+		case "/doc/api":
+			fmt.Fprintf(w, `<html><body><h1>API Documentation</h1><p>High information content about distributed systems.</p></body></html>`)
+		case "/login":
+			fmt.Fprintf(w, `<html><body><h1>Login</h1><input type="text"/></body></html>`)
+		case "/archive/v1/page1", "/archive/v1/page2", "/archive/v1/page3":
+			fmt.Fprintf(w, `<html><body><p>Empty</p></body></html>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewTestClient(true)
+	jm := NewJobManager(client, "testdata")
+	defer jm.Close()
+
+	job, err := jm.StartCrawl(context.Background(), CrawlRequest{
+		URL:           server.URL + "/",
+		MaxDepth:      2,
+		MaxPages:      10,
+		Adaptive:      true,
+		MinPriority:   0.05,
+		Concurrency:   2,
+		RateLimitRPS:  50.0,
+		Async:         false,
+		AllowLoopback: true,
+	})
+	if err != nil {
+		t.Fatalf("Adaptive crawl failed: %v", err)
+	}
+
+	if job.GetStatus() != "completed" {
+		t.Errorf("expected status 'completed', got %q", job.GetStatus())
+	}
+	if job.PagesCrawled.Load() == 0 {
+		t.Errorf("expected at least 1 page crawled")
+	}
+	t.Logf("Adaptive crawl completed: %d pages crawled, %d queued",
+		job.PagesCrawled.Load(), job.PagesQueued.Load())
+}
