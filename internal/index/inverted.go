@@ -227,6 +227,11 @@ func (idx *InvertedIndex) LoadSnapshot(filePath string) error {
 	} else {
 		idx.postings = snap.Postings
 	}
+	if snap.DocLengths == nil {
+		idx.docLengths = make(map[string]int)
+	} else {
+		idx.docLengths = snap.DocLengths
+	}
 	idx.totalDocLength = snap.TotalDocLength
 	idx.totalDocuments = snap.TotalDocuments
 	return nil

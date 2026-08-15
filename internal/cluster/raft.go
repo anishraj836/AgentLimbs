@@ -141,9 +141,17 @@ type RaftNode struct {
 	// Proposal futures
 	proposals map[uint64]chan error
 
+	// FIFO applicator queue
+	applyTasks chan applyTask
+
 	// Timers
 	electionTimer   *time.Timer
 	heartbeatTicker *time.Ticker
+}
+
+type applyTask struct {
+	msg    ApplyMsg
+	future chan error
 }
 
 // NewRaftNode creates and initializes a Raft consensus node.
@@ -171,10 +179,12 @@ func NewRaftNode(cfg RaftConfig, transport RaftTransport, applyCh chan ApplyMsg)
 		nextIndex:  make(map[string]uint64),
 		matchIndex: make(map[string]uint64),
 		proposals:  make(map[uint64]chan error),
+		applyTasks: make(chan applyTask, 1024),
 	}
 
 	rn.resetElectionTimer()
 	go rn.runLifecycle()
+	go rn.applyLoop()
 
 	return rn
 }
@@ -195,12 +205,6 @@ func (rn *RaftNode) resetElectionTimer() {
 	if rn.electionTimer == nil {
 		rn.electionTimer = time.NewTimer(dur)
 	} else {
-		if !rn.electionTimer.Stop() {
-			select {
-			case <-rn.electionTimer.C:
-			default:
-			}
-		}
 		rn.electionTimer.Reset(dur)
 	}
 }
@@ -479,25 +483,54 @@ func (rn *RaftNode) advanceCommitIndexLocked() {
 	}
 }
 
-// applyCommittedEntriesLocked dispatches newly committed log entries onto applyCh.
+// applyCommittedEntriesLocked dispatches newly committed log entries onto the FIFO applyTasks queue.
 func (rn *RaftNode) applyCommittedEntriesLocked() {
 	for rn.commitIndex > rn.lastApplied {
 		rn.lastApplied++
 		entry := rn.log[rn.lastApplied]
 
-		msg := ApplyMsg{
-			CommandValid: true,
-			Command:      entry,
-			CommandIndex: entry.Index,
+		var future chan error
+		if ch, exists := rn.proposals[entry.Index]; exists {
+			future = ch
+			delete(rn.proposals, entry.Index)
 		}
 
-		rn.applyCh <- msg
+		task := applyTask{
+			msg: ApplyMsg{
+				CommandValid: true,
+				Command:      entry,
+				CommandIndex: entry.Index,
+			},
+			future: future,
+		}
 
-		// Resolve pending client proposal future if registered
-		if ch, exists := rn.proposals[entry.Index]; exists {
-			ch <- nil
-			close(ch)
-			delete(rn.proposals, entry.Index)
+		select {
+		case rn.applyTasks <- task:
+		default:
+			go func(t applyTask) {
+				select {
+				case <-rn.stopCh:
+					return
+				case rn.applyTasks <- t:
+				}
+			}(task)
+		}
+	}
+}
+
+// applyLoop runs in a single dedicated background goroutine to deliver committed
+// log messages to applyCh in strict monotonic sequence without holding rn.mu.
+func (rn *RaftNode) applyLoop() {
+	for {
+		select {
+		case <-rn.stopCh:
+			return
+		case task := <-rn.applyTasks:
+			rn.applyCh <- task.msg
+			if task.future != nil {
+				task.future <- nil
+				close(task.future)
+			}
 		}
 	}
 }

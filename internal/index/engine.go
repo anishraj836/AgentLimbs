@@ -105,14 +105,12 @@ func (e *Engine) IndexDocumentWithSource(url, title, cleanBody string, termPosit
 	shard.mu.Unlock()
 
 	e.mu.RLock()
-	inv := e.Inverted
-	trie := e.Trie
+	e.Inverted.AddDocument(docID, termPositions, totalTokens)
+	for term, positions := range termPositions {
+		e.Trie.Insert(term, len(positions))
+	}
 	e.mu.RUnlock()
 
-	inv.AddDocument(docID, termPositions, totalTokens)
-	for term, positions := range termPositions {
-		trie.Insert(term, len(positions))
-	}
 	e.IndexDocumentVector(docID, title, cleanBody)
 
 	_ = storage.SaveCrawledDocument(context.Background(), url, title, cleanBody, totalTokens, sourceType, sourceURL)
