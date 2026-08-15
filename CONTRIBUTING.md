@@ -1,8 +1,8 @@
-# Contributing to AgentLimbs 🦾
+# Contributing to WebLimbAI 🦾
 
-Thank you for your interest in contributing to **AgentLimbs**! We welcome contributions from open-source developers, systems engineers, AI builders, and researchers.
+Thank you for your interest in contributing to **WebLimbAI**! We welcome contributions from open-source developers, systems engineers, AI builders, and researchers.
 
-AgentLimbs is a high-throughput distributed web crawler, hybrid BM25 + Vector RRF search engine, and Anthropic Model Context Protocol (MCP) server written in **Go**.
+WebLimbAI is a high-throughput distributed web crawler, hybrid BM25 + Vector RRF search engine, and Anthropic Model Context Protocol (MCP) server written in **Go**.
 
 Follow this guide to get your local development environment set up, understand our monorepo architecture, and submit high-quality pull requests.
 
@@ -26,7 +26,7 @@ We are committed to fostering an open, welcoming, and inclusive community. Pleas
 
 ## 🛠️ Prerequisites
 
-Before building or running AgentLimbs, ensure you have the following installed:
+Before building or running WebLimbAI, ensure you have the following installed:
 - **Go**: Version `1.21` or higher (`go version`)
 - **Docker & Docker Compose**: Version `20.10+` (`docker compose version`)
 - **Git**: For source control management
@@ -37,12 +37,12 @@ Before building or running AgentLimbs, ensure you have the following installed:
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/anishraj836/AgentLimbs.git
-cd AgentLimbs
+git clone https://github.com/anishraj836/WebLimbAI.git
+cd WebLimbAI
 ```
 
 ### 2. Start Infrastructure Services
-AgentLimbs relies on Docker Compose to orchestrate background infrastructure (Apache Kafka, Zookeeper, Redis, PostgreSQL, Prometheus, and Grafana):
+WebLimbAI relies on Docker Compose to orchestrate background infrastructure (Apache Kafka, Zookeeper, Redis, PostgreSQL, Prometheus, and Grafana):
 
 ```bash
 docker-compose up -d
@@ -76,7 +76,7 @@ go run ./mcp-server/main.go
 
 ## 📁 Monorepo Architecture Overview
 
-AgentLimbs is organized into clean Go microservices and shared packages:
+WebLimbAI is organized into clean Go microservices and shared packages:
 
 ```text
 crawler-monorepo/
@@ -160,7 +160,7 @@ All three commands must complete cleanly with **0 errors and 0 data races**.
    git push origin feature/your-feature-name
    ```
 
-4. **Open a Pull Request** against the `main` branch of `https://github.com/anishraj836/AgentLimbs`.
+4. **Open a Pull Request** against the `main` branch of `https://github.com/anishraj836/WebLimbAI`.
 
 ### PR Checklist
 - [ ] Code builds cleanly (`go build ./...`).
@@ -171,4 +171,4 @@ All three commands must complete cleanly with **0 errors and 0 data races**.
 
 ---
 
-Thank you for helping build **AgentLimbs**! 🦾🚀
+Thank you for helping build **WebLimbAI**! 🦾🚀

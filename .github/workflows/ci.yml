@@ -1,4 +1,4 @@
-name: AgentLimbs CI
+name: WebLimbAI CI
 
 on:
   push:

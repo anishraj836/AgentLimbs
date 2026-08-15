@@ -7,7 +7,7 @@ set -e
 # ==============================================================================
 
 REPO="anishraj836/WebLimbAI"
-BINARY_NAME="agentlimbs"
+BINARY_NAME="weblimb"
 
 # 1. OS & Architecture Detection
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -22,7 +22,7 @@ case "$OS" in
     ;;
   *)
     echo "❌ Error: Unsupported Operating System: $OS" >&2
-    echo "AgentLimbs currently supports macOS (Darwin) and Linux." >&2
+    echo "WebLimbAI currently supports macOS (Darwin) and Linux." >&2
     exit 1
     ;;
 esac
@@ -36,7 +36,7 @@ case "$ARCH" in
     ;;
   *)
     echo "❌ Error: Unsupported Architecture: $ARCH" >&2
-    echo "AgentLimbs supports amd64 and arm64." >&2
+    echo "WebLimbAI supports amd64 and arm64." >&2
     exit 1
     ;;
 esac
@@ -54,10 +54,10 @@ else
 fi
 
 # 3. Setup Temporary Workspace with Auto-Cleanup Trap
-TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'agentlimbs-install')"
+TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'weblimb-install')"
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
-TAR_NAME="agentlimbs_${OS}_${ARCH}.tar.gz"
+TAR_NAME="weblimb_${OS}_${ARCH}.tar.gz"
 TAR_PATH="$TMP_DIR/$TAR_NAME"
 CHECKSUM_PATH="$TMP_DIR/checksums.txt"
 
@@ -65,12 +65,17 @@ RELEASE_URL="https://github.com/${REPO}/releases/latest/download"
 DOWNLOAD_URL="${RELEASE_URL}/${TAR_NAME}"
 CHECKSUM_URL="${RELEASE_URL}/checksums.txt"
 
-echo "📦 Downloading AgentLimbs for ${OS}/${ARCH}..."
+echo "📦 Downloading WebLimbAI for ${OS}/${ARCH}..."
 if ! $DOWNLOAD_FILE_CMD "$TAR_PATH" "$DOWNLOAD_URL"; then
-  echo "❌ Error: Failed to download release archive from:" >&2
-  echo "   $DOWNLOAD_URL" >&2
-  echo "Please check your network connection or verify release availability." >&2
-  exit 1
+  # Fallback to agentlimbs tarball if weblimb tarball not yet published
+  TAR_NAME_FALLBACK="agentlimbs_${OS}_${ARCH}.tar.gz"
+  DOWNLOAD_URL_FALLBACK="${RELEASE_URL}/${TAR_NAME_FALLBACK}"
+  if ! $DOWNLOAD_FILE_CMD "$TAR_PATH" "$DOWNLOAD_URL_FALLBACK"; then
+    echo "❌ Error: Failed to download release archive from:" >&2
+    echo "   $DOWNLOAD_URL" >&2
+    echo "Please check your network connection or verify release availability." >&2
+    exit 1
+  fi
 fi
 
 # 4. Checksum Verification (Optional / Best Effort against checksums.txt)
@@ -103,8 +108,9 @@ echo "📂 Extracting archive..."
 tar -xzf "$TAR_PATH" -C "$TMP_DIR"
 
 if [ ! -f "$TMP_DIR/$BINARY_NAME" ]; then
-  # Fallback check if binary has light suffix
-  if [ -f "$TMP_DIR/agentlimbs-light" ]; then
+  if [ -f "$TMP_DIR/agentlimbs" ]; then
+    mv "$TMP_DIR/agentlimbs" "$TMP_DIR/$BINARY_NAME"
+  elif [ -f "$TMP_DIR/agentlimbs-light" ]; then
     mv "$TMP_DIR/agentlimbs-light" "$TMP_DIR/$BINARY_NAME"
   else
     echo "❌ Error: Extracted archive did not contain '$BINARY_NAME' binary." >&2
@@ -137,6 +143,11 @@ else
   fi
 fi
 
+# Create agentlimbs alias / symlink for backward compatibility
+if [ -w "$INSTALL_DIR" ]; then
+  ln -sf "$INSTALL_DIR/$BINARY_NAME" "$INSTALL_DIR/agentlimbs" 2>/dev/null || true
+fi
+
 # 7. PATH Check & Guidance
 PATH_CONFIGURED=0
 case ":$PATH:" in
@@ -144,7 +155,7 @@ case ":$PATH:" in
 esac
 
 echo ""
-echo "🎉 AgentLimbs installed successfully at: $INSTALL_DIR/$BINARY_NAME"
+echo "🎉 WebLimbAI installed successfully at: $INSTALL_DIR/$BINARY_NAME"
 
 if [ "$PATH_CONFIGURED" -eq 0 ]; then
   echo ""

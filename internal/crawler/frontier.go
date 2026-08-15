@@ -147,7 +147,7 @@ func patternToRegexp(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(sb.String())
 }
 
-// NormalizeCanonicalURL applies the standard AgentLimbs URL canonicalization and trap detection pipeline.
+// NormalizeCanonicalURL applies the standard WebLimbAI URL canonicalization and trap detection pipeline.
 func NormalizeCanonicalURL(rawURL string, allowLoopback bool) (string, error) {
 	trimmed := strings.TrimSpace(rawURL)
 	if trimmed == "" {

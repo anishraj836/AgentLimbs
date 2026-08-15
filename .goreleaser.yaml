@@ -1,14 +1,14 @@
 version: 2
-project_name: agentlimbs
+project_name: weblimb
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: agentlimbs
+  - id: weblimb
     main: ./cmd/agentlimbs-light/main.go
-    binary: agentlimbs
+    binary: weblimb
     env:
       - CGO_ENABLED=0
     goos:

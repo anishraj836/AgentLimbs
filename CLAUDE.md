@@ -1,6 +1,6 @@
-# 🦾 AgentLimbs — Developer & AI Agent Guidelines
+# 🦾 WebLimbAI — Developer & AI Agent Guidelines
 
-This repository contains **AgentLimbs**, a high-performance web crawler, indexing engine, vector embedding store, and Anthropic Model Context Protocol (MCP) server written in Go.
+This repository contains **WebLimbAI**, a high-performance web crawler, indexing engine, vector embedding store, and Anthropic Model Context Protocol (MCP) server written in Go.
 
 ---
 

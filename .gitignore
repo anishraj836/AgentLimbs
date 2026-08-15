@@ -8,6 +8,7 @@
 *.out
 bin/
 dist/
+weblimb
 agentlimbs
 agentlimbs-light
 agent-limbs-mcp

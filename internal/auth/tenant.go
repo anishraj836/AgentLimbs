@@ -178,7 +178,7 @@ func TenantMiddleware(next http.Handler) http.Handler {
 			claims, err := ParseJWT(tokenStr, GetJWTSecret())
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("WWW-Authenticate", `Bearer realm="AgentLimbs"`)
+				w.Header().Set("WWW-Authenticate", `Bearer realm="WebLimbAI"`)
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"Unauthorized: Invalid JWT token: %v"}`, err)))
 				return

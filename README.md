@@ -1,7 +1,7 @@
-# 🦾 AgentLimbs
+# 🦾 WebLimbAI
 
 > **A self-hostable web retrieval layer for AI Agents.**  
-> Give agents access to the web without coupling them to a third-party scraping or search API. AgentLimbs crawls and cleans web pages, incrementally indexes them using hybrid BM25 + semantic retrieval, and exposes the resulting capabilities through HTTP and MCP.
+> Give agents access to the web without coupling them to a third-party scraping or search API. WebLimbAI crawls and cleans web pages, incrementally indexes them using hybrid BM25 + semantic retrieval, and exposes the resulting capabilities through HTTP and MCP.
 
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -17,7 +17,7 @@ Most AI agents face a core dilemma when interacting with the web:
 2. **Third-Party API Coupling**: Relying on SaaS APIs (like Tavily or Jina) introduces external API costs, latency, vendor lock-in, and privacy risks for internal data.
 3. **Scrapers Aren't Search Engines**: Standard web scrapers only return raw Markdown—they don't store or search what they've scraped.
 
-**AgentLimbs** acts as the dedicated **sensory and motor layer** for AI Agents. It receives raw web requests or natural language queries, cleans HTML into token-efficient Markdown, indexes content incrementally in-memory, and provides hybrid keyword+vector search across the agent's web memory.
+**WebLimbAI** acts as the dedicated **sensory and motor layer** for AI Agents. It receives raw web requests or natural language queries, cleans HTML into token-efficient Markdown, indexes content incrementally in-memory, and provides hybrid keyword+vector search across the agent's web memory.
 
 ```text
                      AI Agent (Claude / Ollama / Custom)
@@ -25,7 +25,7 @@ Most AI agents face a core dilemma when interacting with the web:
                                     MCP
                                      │
                                ┌───────────┐
-                               │ AgentLimbs│
+                               │ WebLimbAI │
                                └─────┬─────┘
                                      │
                     ┌────────────────┴────────────────┐
@@ -43,7 +43,7 @@ Most AI agents face a core dilemma when interacting with the web:
 
 ## ⚡ Quick Start & Universal CLI
 
-Install AgentLimbs via the universal 1-line script or build from source:
+Install WebLimbAI via the universal 1-line script or build from source:
 
 ```bash
 # 1-Line Universal Installer (macOS & Linux, detects arm64 / amd64 automatically)
@@ -65,7 +65,7 @@ agentlimbs init-mcp --stdout
 ```
 
 ### Terminal Direct Scraping & Search
-Use AgentLimbs directly from your terminal or pipe into standard Unix tools:
+Use WebLimbAI directly from your terminal or pipe into standard Unix tools:
 
 ```bash
 # Scrape any web page into clean, token-reduced Markdown:
@@ -88,7 +88,7 @@ agentlimbs serve --port 8080
 
 ## 🏗️ Architecture & Module Map
 
-AgentLimbs is designed as a **Modular Monolith** with clean separation between indexing data structures and search algorithms:
+WebLimbAI is designed as a **Modular Monolith** with clean separation between indexing data structures and search algorithms:
 
 ```text
 crawler-monorepo/
@@ -134,7 +134,7 @@ crawler-monorepo/
 
 ### 1. Single-Binary Embedded Mode (Recommended)
 
-Run AgentLimbs as a single embedded Go process in 2 seconds with zero external dependencies:
+Run WebLimbAI as a single embedded Go process in 2 seconds with zero external dependencies:
 
 ```bash
 # Run single-binary server (boots on port 8080)
@@ -157,7 +157,7 @@ docker-compose up -d
 
 ## 📡 Comprehensive REST API Reference
 
-AgentLimbs exposes 9 HTTP API endpoints. All endpoints support CORS and return JSON responses.
+WebLimbAI exposes 9 HTTP API endpoints. All endpoints support CORS and return JSON responses.
 
 ### Summary of All 9 Endpoints
 
@@ -381,7 +381,7 @@ curl -X GET http://localhost:8090/v1/agent/tools
 
 ## 🛡️ Security & Rate Limiting
 
-AgentLimbs implements multi-tier rate limiting and client IP identification:
+WebLimbAI implements multi-tier rate limiting and client IP identification:
 
 - **Embedded Light Server (`cmd/agentlimbs-light`)**:
   - Token bucket rate limiter configured at **50 requests/sec** with a burst capacity of **100 requests**.
@@ -396,14 +396,14 @@ AgentLimbs implements multi-tier rate limiting and client IP identification:
 
 ## 🔌 Model Context Protocol (MCP) Integration
 
-Connect AgentLimbs to your AI IDE (Antigravity, Cursor, Claude Desktop) as a stdio tool provider.
+Connect WebLimbAI to your AI IDE (Antigravity, Cursor, Claude Desktop) as a stdio tool provider.
 
 ### Setup Config (`mcp_config.json`)
 
 ```json
 {
   "mcpServers": {
-    "agent-limbs": {
+    "weblimb": {
       "command": "go",
       "args": ["run", "mcp-server/main.go"]
     }
@@ -418,7 +418,7 @@ Connect AgentLimbs to your AI IDE (Antigravity, Cursor, Claude Desktop) as a std
 ```json
 {
   "name": "agent_limbs_scrape",
-  "description": "Scrape and extract clean Markdown content from a web URL into AgentLimbs search index",
+  "description": "Scrape and extract clean Markdown content from a web URL into WebLimbAI search index",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -468,7 +468,7 @@ Connect AgentLimbs to your AI IDE (Antigravity, Cursor, Claude Desktop) as a std
 
 ## 📊 Companion Web Dashboard
 
-AgentLimbs includes a companion web dashboard located in `agentlimbs-dashboard` running on **`http://localhost:3001`**.
+WebLimbAI includes a companion web dashboard located in `agentlimbs-dashboard` running on **`http://localhost:3001`**.
 
 - **Web Scraping Playground**: Test URL scraping with live Markdown preview, token reduction stats, and custom TTL assignment.
 - **Hybrid RRF Search Workbench**: Execute search queries, view BM25 vs Vector scores, and inspect post-RRF candidate rankings.
@@ -479,7 +479,7 @@ AgentLimbs includes a companion web dashboard located in `agentlimbs-dashboard` 
 
 ## ⚙️ Environment Variables Table
 
-Configure AgentLimbs using environment variables in `.env` or system shell:
+Configure WebLimbAI using environment variables in `.env` or system shell:
 
 | Variable | Description | Default | Bounds / Allowed Values |
 | :--- | :--- | :--- | :--- |
@@ -512,7 +512,7 @@ The monorepo contains a complete OpenAPI 3.0 REST API specification in [`openapi
 
 ### SDE Corpus Seed Engine (`cmd/seed_sde_corpus`)
 
-AgentLimbs includes a batch corpus seed CLI tool to populate the vector, trie, and BM25 index engines with **1,000+ Software Development Engineering (SDE) technical documents** across 10 core domains (Data Structures, System Design, Storage Engines, OS Kernel, Computer Networking, Go Concurrency, Cloud/K8s, Object Design Patterns, Cryptography/Security, ML Infra & RAG).
+WebLimbAI includes a batch corpus seed CLI tool to populate the vector, trie, and BM25 index engines with **1,000+ Software Development Engineering (SDE) technical documents** across 10 core domains (Data Structures, System Design, Storage Engines, OS Kernel, Computer Networking, Go Concurrency, Cloud/K8s, Object Design Patterns, Cryptography/Security, ML Infra & RAG).
 
 Run the seed script locally:
 
@@ -539,21 +539,21 @@ go test -v ./...
 
 ## 🔍 Architectural Scope, Design Philosophy & Limitations
 
-AgentLimbs is designed around the **Unix Philosophy for AI Agents**: *Provide a single-binary, deterministic, sub-100ms sensory limb for agents without coupling them to heavy external runtimes.*
+WebLimbAI is designed around the **Unix Philosophy for AI Agents**: *Provide a single-binary, deterministic, sub-100ms sensory limb for agents without coupling them to heavy external runtimes.*
 
 ### 1. High-Speed PDF Text Extraction vs. Image OCR
-- **Native Text Layer**: AgentLimbs decodes PostScript text streams, Type 1 font difference encodings, kerning displacements, and decomposed ligatures natively in Go in **<100ms**.
+- **Native Text Layer**: WebLimbAI decodes PostScript text streams, Type 1 font difference encodings, kerning displacements, and decomposed ligatures natively in Go in **<100ms**.
 - **Embedded Raster Figures (Documented Limitation)**: Text baked inside embedded bitmap graphics (e.g. flowchart box labels in architecture diagrams or rasterized charts) is intentionally not parsed via traditional OCR in the fast path.
 - **Why No Heavy OCR / Vision Ingestion?**:
   1. **Latency & Cost**: Calling multimodal vision models on 15 figures per paper adds 5–10 seconds of latency and external API token costs to every scrape.
   2. **Zero CGo / Runtime Bloat**: Traditional OCR (Tesseract) requires heavy system C-libraries, breaking the single-binary zero-dependency deployment model.
-  3. **Agentic Separation of Concerns**: Consuming agents (such as Claude, GPT-4, or Gemini) already possess world-class vision capabilities. AgentLimbs keeps the ingestion layer blazing fast and lightweight, leaving multimodal image reasoning to the calling agent on demand.
+  3. **Agentic Separation of Concerns**: Consuming agents (such as Claude, GPT-4, or Gemini) already possess world-class vision capabilities. WebLimbAI keeps the ingestion layer blazing fast and lightweight, leaving multimodal image reasoning to the calling agent on demand.
 
 ---
 
 ## ⚡ High-Scale Performance Benchmark (500,000+ Documents)
 
-AgentLimbs includes dedicated benchmarking suites in `scripts/benchmarks/` to measure ingestion throughput, memory overhead, and search latency across large-scale corpora.
+WebLimbAI includes dedicated benchmarking suites in `scripts/benchmarks/` to measure ingestion throughput, memory overhead, and search latency across large-scale corpora.
 
 ### 500,000-Document Benchmark Results
 

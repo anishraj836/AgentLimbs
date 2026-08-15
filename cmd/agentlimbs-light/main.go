@@ -43,7 +43,7 @@ import (
 )
 
 var (
-	version         = "v1.1.0-devex"
+	version         = "v1.5.0-entropy"
 	saveTriggerChan = make(chan string, 100)
 	saveTriggerOnce sync.Once
 )
@@ -781,10 +781,10 @@ func parseInterleavedFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 }
 
 func printHelp() {
-	helpText := fmt.Sprintf(`AgentLimbs CLI (%s) — High-Performance RAG Web Crawler & Hybrid Search Engine
+	helpText := fmt.Sprintf(`WebLimbAI CLI (%s) — High-Performance RAG Web Crawler & Hybrid Search Engine
 
 Usage:
-  agentlimbs <subcommand> [flags]
+  weblimb <subcommand> [flags]
 
 Available Subcommands:
   serve                               Run HTTP REST API server or stdio MCP server (Default)
@@ -794,20 +794,20 @@ Available Subcommands:
   search "<query>"                    Hybrid BM25 + Vector + RRF search from local index
   init-mcp                            1-Click AI IDE auto-configurator (Claude Desktop & Cursor)
   seed                                Seed 1,000+ SDE technical documents into local index
-  version                             Display current AgentLimbs version
+  version                             Display current WebLimbAI version
 
 Examples:
-  agentlimbs                                            # Starts HTTP API daemon on :8080
-  agentlimbs serve --port 9090                          # Starts HTTP server on port 9090
-  agentlimbs serve --mcp                                # Starts stdio Model Context Protocol server
-  agentlimbs scrape https://go.dev -j                   # Scrapes URL and prints structured JSON
-  agentlimbs crawl https://docs.docker.com -a -d 2      # Adaptive entropy-guided documentation crawl
-  agentlimbs extract https://example.com --schema s.json# Structured JSON extraction with schema
-  agentlimbs search "GMP Scheduler"                     # Searches local indexed documents
-  agentlimbs init-mcp                                   # Configures Claude Desktop & Cursor MCP JSON
-  agentlimbs seed                                       # Seeds 1,000+ technical documents
+  weblimb                                               # Starts HTTP API daemon on :8080
+  weblimb serve --port 9090                             # Starts HTTP server on port 9090
+  weblimb serve --mcp                                   # Starts stdio Model Context Protocol server
+  weblimb scrape https://go.dev -j                      # Scrapes URL and prints structured JSON
+  weblimb crawl https://docs.docker.com -a -d 2         # Adaptive entropy-guided documentation crawl
+  weblimb extract https://example.com --schema s.json   # Structured JSON extraction with schema
+  weblimb search "GMP Scheduler"                        # Searches local indexed documents
+  weblimb init-mcp                                      # Configures Claude Desktop & Cursor MCP JSON
+  weblimb seed                                          # Seeds 1,000+ technical documents
 
-Run 'agentlimbs <subcommand> --help' for details on each subcommand.
+Run 'weblimb <subcommand> --help' for details on each subcommand.
 `, version)
 	fmt.Fprint(os.Stderr, helpText)
 }

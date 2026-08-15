@@ -43,9 +43,9 @@ func TestConfigureMCP_NewFileCreation(t *testing.T) {
 		t.Fatalf("invalid claude json: %v", err)
 	}
 	servers := claudeRoot["mcpServers"].(map[string]any)
-	agentLimbs := servers["agent-limbs"].(map[string]any)
-	if agentLimbs["command"] != "/usr/local/bin/agentlimbs" {
-		t.Errorf("expected command '/usr/local/bin/agentlimbs', got %v", agentLimbs["command"])
+	weblimbServer := servers["weblimb"].(map[string]any)
+	if weblimbServer["command"] != "/usr/local/bin/agentlimbs" {
+		t.Errorf("expected command '/usr/local/bin/agentlimbs', got %v", weblimbServer["command"])
 	}
 
 	// Verify Cursor global file
@@ -59,8 +59,8 @@ func TestConfigureMCP_NewFileCreation(t *testing.T) {
 		t.Fatalf("invalid cursor json: %v", err)
 	}
 	cursorServers := cursorRoot["mcpServers"].(map[string]any)
-	if cursorServers["agent-limbs"] == nil {
-		t.Errorf("agent-limbs server entry missing in cursor config")
+	if cursorServers["weblimb"] == nil {
+		t.Errorf("weblimb server entry missing in cursor config")
 	}
 }
 
@@ -140,8 +140,8 @@ func TestConfigureMCP_NonDestructiveMergeAndKeyPreservation(t *testing.T) {
 	if servers["existing-server"] == nil {
 		t.Errorf("expected existing-server preserved")
 	}
-	if servers["agent-limbs"] == nil {
-		t.Errorf("expected agent-limbs added")
+	if servers["weblimb"] == nil {
+		t.Errorf("expected weblimb added")
 	}
 
 	// Verify file permissions preserved (0600)
@@ -191,8 +191,8 @@ func TestConfigureMCP_EmptyFileHandling(t *testing.T) {
 		t.Fatalf("failed to unmarshal JSON: %v", err)
 	}
 	servers := root["mcpServers"].(map[string]any)
-	if servers["agent-limbs"] == nil {
-		t.Errorf("expected agent-limbs server entry created")
+	if servers["weblimb"] == nil {
+		t.Errorf("expected weblimb server entry created")
 	}
 }
 
@@ -273,8 +273,8 @@ func TestConfigureMCP_DryRunAndStdout(t *testing.T) {
 		t.Fatalf("Stdout ConfigureMCP failed: %v", err)
 	}
 
-	if !strings.Contains(resStdout.StdoutJSON, "agent-limbs") {
-		t.Errorf("expected agent-limbs in StdoutJSON, got %s", resStdout.StdoutJSON)
+	if !strings.Contains(resStdout.StdoutJSON, "weblimb") {
+		t.Errorf("expected weblimb in StdoutJSON, got %s", resStdout.StdoutJSON)
 	}
 	if len(resStdout.FilesCreated) > 0 || len(resStdout.FilesUpdated) > 0 {
 		t.Errorf("Stdout mode should not touch files")

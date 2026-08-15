@@ -65,7 +65,7 @@ func NewQdrantVectorStore(dim int) *QdrantVectorStore {
 
 	collection := os.Getenv("QDRANT_COLLECTION")
 	if collection == "" {
-		collection = "agentlimbs"
+		collection = "weblimb"
 	}
 
 	apiKey := os.Getenv("QDRANT_API_KEY")
@@ -343,7 +343,7 @@ func NewChromaVectorStore(dim int) *ChromaVectorStore {
 
 	collection := os.Getenv("CHROMA_COLLECTION")
 	if collection == "" {
-		collection = "agentlimbs"
+		collection = "weblimb"
 	}
 
 	return &ChromaVectorStore{

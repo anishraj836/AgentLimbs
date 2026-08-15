@@ -168,7 +168,7 @@ func (wd *WebhookDispatcher) worker() {
 				return
 			}
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("User-Agent", "AgentLimbs-Webhook/1.0")
+			req.Header.Set("User-Agent", "WebLimbAI-Webhook/1.0")
 
 			wd.mu.RLock()
 			secret := wd.secretKey

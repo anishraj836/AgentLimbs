@@ -166,7 +166,7 @@ func ConfigureMCP(opts ConfigOptions) (*ConfigResult, error) {
 
 	stdoutConfig := map[string]any{
 		"mcpServers": map[string]any{
-			"agent-limbs": mcpServerBlock,
+			"weblimb": mcpServerBlock,
 		},
 	}
 	stdoutBytes, _ := json.MarshalIndent(stdoutConfig, "", "  ")
@@ -262,7 +262,7 @@ func configureSingleTarget(targetPath string, mcpServerBlock map[string]any, dry
 		root["mcpServers"] = servers
 	}
 
-	servers["agent-limbs"] = mcpServerBlock
+	servers["weblimb"] = mcpServerBlock
 
 	formattedJSON, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
