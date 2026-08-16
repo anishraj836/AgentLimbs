@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1945,7 +1946,15 @@ func main() {
 	}
 
 	if firstArg == "-v" || firstArg == "--version" || firstArg == "version" {
-		fmt.Printf("lightlimbs %s (WebLimbAI)\n", version)
+		provider := os.Getenv("EMBEDDING_PROVIDER")
+		if provider == "" {
+			provider = "default (128-D subword n-gram)"
+		}
+		fmt.Printf("WebLimbAI LightLimbs (%s)\n", version)
+		fmt.Printf("  - Architecture: Embedded Single-Binary\n")
+		fmt.Printf("  - Embedding Provider: %s\n", provider)
+		fmt.Printf("  - Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("  - Go Runtime: %s\n", runtime.Version())
 		return
 	}
 
