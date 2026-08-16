@@ -1,8 +1,10 @@
 # WebLimbAI
 
-> A self-hostable web retrieval and hybrid search engine for AI agents and developer workflows.
+> The self-hosted web retrieval layer for AI agents.
 
-WebLimbAI crawls and extracts clean, token-efficient Markdown from web pages, indexes content incrementally using hybrid BM25 and dense vector retrieval, and exposes functionality over HTTP and the Model Context Protocol (MCP).
+Crawl documentation. Strip HTML boilerplate. Search semantically and lexically. Expose the knowledge directly to **Cursor**, **Claude Desktop**, and **autonomous agents** via native Model Context Protocol (MCP).
+
+**Starts as a zero-dependency single binary (15 MB RAM); scales to a distributed cluster when you need it.**
 
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
