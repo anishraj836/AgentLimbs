@@ -1421,34 +1421,34 @@ func runInitMCP(args []string) {
 	}
 
 	if *dryRun {
-		fmt.Fprintln(os.Stderr, "🔍 Dry-Run Mode: Showing proposed MCP configurations without modifying files:")
+		fmt.Fprintln(os.Stderr, "Dry-Run Mode: Showing proposed MCP configurations without modifying files:")
 		for path, diff := range res.DryRunDiffs {
-			fmt.Fprintf(os.Stderr, "\n📄 Target File: %s\n%s\n", path, diff)
+			fmt.Fprintf(os.Stderr, "\nTarget File: %s\n%s\n", path, diff)
 		}
 		return
 	}
 
-	fmt.Fprintln(os.Stderr, "🚀 AgentLimbs 1-Click MCP Auto-Configurator")
+	fmt.Fprintln(os.Stderr, "WebLimbAI LightLimbs MCP Auto-Configurator")
 	fmt.Fprintf(os.Stderr, "   Executable Path: %s\n", res.ResolvedBinaryPath)
 	if len(res.FilesCreated) > 0 {
 		for _, f := range res.FilesCreated {
-			fmt.Fprintf(os.Stderr, "   ✅ Created: %s\n", f)
+			fmt.Fprintf(os.Stderr, "   Created: %s\n", f)
 		}
 	}
 	if len(res.FilesUpdated) > 0 {
 		for _, f := range res.FilesUpdated {
-			fmt.Fprintf(os.Stderr, "   ✅ Updated: %s\n", f)
+			fmt.Fprintf(os.Stderr, "   Updated: %s\n", f)
 		}
 	}
 	if len(res.BackupsCreated) > 0 {
 		for _, b := range res.BackupsCreated {
-			fmt.Fprintf(os.Stderr, "   📦 Backup:  %s\n", b)
+			fmt.Fprintf(os.Stderr, "   Backup:  %s\n", b)
 		}
 	}
 	for _, w := range res.Warnings {
-		fmt.Fprintf(os.Stderr, "   ⚠️ Warning: %s\n", w)
+		fmt.Fprintf(os.Stderr, "   Warning: %s\n", w)
 	}
-	fmt.Fprintln(os.Stderr, "\n✨ AI IDE MCP server configuration complete! Restart Claude Desktop or reload Cursor IDE.")
+	fmt.Fprintln(os.Stderr, "\nMCP server configuration complete. Restart Claude Desktop or reload Cursor.")
 }
 
 type SDEDomain struct {
@@ -1473,7 +1473,7 @@ func runSeed(args []string) {
 	}
 
 	if !*quiet {
-		fmt.Fprintln(os.Stderr, "🚀 Seeding SDE Technical Corpus into local index...")
+		fmt.Fprintln(os.Stderr, "Seeding SDE technical corpus into local index...")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -1827,7 +1827,7 @@ func runCrawlWithClient(client *crawler.Client, args []string) {
 		return
 	}
 
-	fmt.Printf("🕷️ Crawl Job %s finished with status: %s\n", job.ID, job.GetStatus())
+	fmt.Printf("Crawl Job %s finished with status: %s\n", job.ID, job.GetStatus())
 	fmt.Printf("   - Pages Crawled: %d\n", job.PagesCrawled.Load())
 	fmt.Printf("   - Pages Queued:  %d\n", job.PagesQueued.Load())
 	fmt.Printf("   - Tokens Saved:  %d\n", job.TokensSaved.Load())
