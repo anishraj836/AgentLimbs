@@ -34,8 +34,20 @@ jobs:
           CI: "true"
           ENV: "test"
         run: |
+          set +e
+          FAILED=0
           for pkg in $(go list ./...); do
-            echo "::group::Testing $pkg"
-            go test -race -v -timeout 2m "$pkg"
-            echo "::endgroup::"
+            echo "Testing $pkg..."
+            OUTPUT=$(go test -race -v -timeout 2m "$pkg" 2>&1)
+            STATUS=$?
+            if [ $STATUS -ne 0 ]; then
+              FAILED=1
+              echo "FAILED: $pkg"
+              echo "$OUTPUT"
+            else
+              echo "PASSED: $pkg"
+            fi
           done
+          if [ $FAILED -ne 0 ]; then
+            exit 1
+          fi
