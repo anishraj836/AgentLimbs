@@ -33,4 +33,9 @@ jobs:
         env:
           CI: "true"
           ENV: "test"
-        run: go test -race -v -timeout 10m ./...
+        run: |
+          for pkg in $(go list ./...); do
+            echo "::group::Testing $pkg"
+            go test -race -v -timeout 2m "$pkg"
+            echo "::endgroup::"
+          done
