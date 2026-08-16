@@ -1,39 +1,39 @@
-# Contributing to WebLimbAI 🦾
+# Contributing to WebLimbAI
 
-Thank you for your interest in contributing to **WebLimbAI**! We welcome contributions from open-source developers, systems engineers, AI builders, and researchers.
+Thank you for your interest in contributing to **WebLimbAI**. We welcome contributions from open-source developers, systems engineers, AI builders, and researchers.
 
-WebLimbAI is a high-throughput distributed web crawler, hybrid BM25 + Vector RRF search engine, and Anthropic Model Context Protocol (MCP) server written in **Go**.
+WebLimbAI is an embedded and distributed web crawler, hybrid BM25 + Vector search engine, and Model Context Protocol (MCP) server written in **Go**.
 
-Follow this guide to get your local development environment set up, understand our monorepo architecture, and submit high-quality pull requests.
-
----
-
-## 📋 Table of Contents
-- [Code of Conduct](#-code-of-conduct)
-- [Prerequisites](#-prerequisites)
-- [Local Development Setup](#-local-development-setup)
-- [Monorepo Architecture Overview](#-monorepo-architecture-overview)
-- [Coding Standards & Security Hygiene](#-coding-standards--security-hygiene)
-- [Testing & Verification](#-testing--verification)
-- [Submitting a Pull Request](#-submitting-a-pull-request)
+Follow this guide to set up your local development environment, understand the monorepo architecture, and submit pull requests.
 
 ---
 
-## 📜 Code of Conduct
+## Table of Contents
+- [Code of Conduct](#code-of-conduct)
+- [Prerequisites](#prerequisites)
+- [Local Development Setup](#local-development-setup)
+- [Monorepo Architecture Overview](#monorepo-architecture-overview)
+- [Coding Standards & Safety Guidelines](#coding-standards--safety-guidelines)
+- [Testing & Verification](#testing--verification)
+- [Submitting a Pull Request](#submitting-a-pull-request)
+
+---
+
+## Code of Conduct
 We are committed to fostering an open, welcoming, and inclusive community. Please treat all contributors and maintainers with respect.
 
 ---
 
-## 🛠️ Prerequisites
+## Prerequisites
 
-Before building or running WebLimbAI, ensure you have the following installed:
-- **Go**: Version `1.21` or higher (`go version`)
-- **Docker & Docker Compose**: Version `20.10+` (`docker compose version`)
+Before building or running WebLimbAI, ensure you have:
+- **Go**: Version `1.22` or higher (`go version`)
+- **Docker & Docker Compose**: Version `20.10+` (optional, for PowerLimbs distributed mode)
 - **Git**: For source control management
 
 ---
 
-## 🚀 Local Development Setup
+## Local Development Setup
 
 ### 1. Clone the Repository
 ```bash
@@ -41,134 +41,85 @@ git clone https://github.com/anishraj836/WebLimbAI.git
 cd WebLimbAI
 ```
 
-### 2. Start Infrastructure Services
-WebLimbAI relies on Docker Compose to orchestrate background infrastructure (Apache Kafka, Zookeeper, Redis, PostgreSQL, Prometheus, and Grafana):
+### 2. Build the Embedded LightLimbs CLI
+```bash
+go mod download
+go build -o lightlimbs ./cmd/lightlimbs
+```
+
+### 3. Run LightLimbs Locally
+```bash
+# Start embedded HTTP API and MCP server on port 8080
+./lightlimbs serve --port 8080
+
+# Or run stdio MCP mode directly
+./lightlimbs serve --mcp
+```
+
+### 4. (Optional) Run PowerLimbs Distributed Stack
+For multi-node distributed development with Kafka, PostgreSQL, and Redis:
 
 ```bash
 docker-compose up -d
 ```
 
-Verify all containers are running:
-```bash
-docker-compose ps
-```
-
-### 3. Build the Monorepo
-Download dependencies and build all microservices and the MCP server binary:
-
-```bash
-go mod download
-go build -o mcp-server/agent-limbs-mcp ./mcp-server/main.go
-```
-
-### 4. Run Microservices Locally
-You can run individual microservices locally for testing:
-
-```bash
-# Run Agent Service (AI Scrape & Hybrid RAG REST API)
-EXECUTION_MODE=local go run ./agent-service/main.go
-
-# Run MCP Server (Stdio Interface for Claude Desktop & Cursor)
-go run ./mcp-server/main.go
-```
-
 ---
 
-## 📁 Monorepo Architecture Overview
+## Monorepo Architecture Overview
 
-WebLimbAI is organized into clean Go microservices and shared packages:
+WebLimbAI is structured into clean modular packages:
 
 ```text
 crawler-monorepo/
-├── agent-service/          # REST API (/v1/scrape, /v1/agent/query) & Auth Middleware
-├── crawler-service/        # Worker pool, HTTP client with SSRF guards & storage
-├── frontier-service/       # Crawl frontier seed manager & Redis Bloom Filter
-├── indexer-service/        # BM25 Inverted Index & PostgreSQL persistence engine
-├── parser-service/         # HTML DOM parser, link extractor, & clean markdown generator
-├── mcp-server/             # Anthropic Model Context Protocol (MCP) stdio server
-├── common/                 # Shared core packages
-│   ├── bm25/               # BM25 ranking algorithm & snippet highlighter
-│   ├── db/                 # PostgreSQL schema & pgxpool document persistence
-│   ├── hybrid/             # Reciprocal Rank Fusion (RRF) algorithm
-│   ├── markdown/           # HTML-to-Markdown conversion engine
-│   ├── mcp/                # MCP protocol specification handlers (v2024-11-05)
-│   ├── robotstxt/          # Robots.txt compliance parser
-│   ├── trie/               # O(L) Trie autocomplete data structure
-│   └── vector/             # Dense feature vector generator & cosine similarity
-└── docker-compose.yml      # Infrastructure service definitions
+├── cmd/
+│   ├── lightlimbs/          # Single-binary embedded server & universal CLI
+│   └── seed_sde_corpus/     # Batch 1,000+ SDE corpus ingestion CLI tool
+├── internal/
+│   ├── cluster/             # PowerLimbs: Raft consensus, Hash Ring, Scatter-Gather
+│   ├── crawler/             # Adaptive entropy priority frontier, anti-bot HTTP client
+│   ├── extractor/           # HTML DOM AST parser -> Markdown, JSON Schema
+│   ├── index/               # Inverted Index (VByte + Block-Max WAND), Vector Index (Int8)
+│   ├── search/              # Hybrid RRF, Re-ranking, Metasearch, DeepSeek reasoning
+│   ├── storage/             # PostgreSQL pool, schema migrations, TTL janitor, JSON fallback
+│   └── mcp/                 # Model Context Protocol stdio handler & auto-configurator
+├── common/                  # Shared middleware, ratelimit, config, webhook, kafka, logger
+├── mcp-server/              # Model Context Protocol stdio binary entrypoint
+├── agent-service/           # PowerLimbs: Agent microservice (:8090)
+├── search-service/          # PowerLimbs: Search microservice (:8088)
+├── indexer-service/         # PowerLimbs: Kafka indexer worker service
+└── docker-compose.yml       # Distributed cluster service definitions
 ```
 
 ---
 
-## 🔒 Coding Standards & Security Hygiene
+## Coding Standards & Safety Guidelines
 
-To maintain enterprise-grade security and code quality, adhere to these house rules when submitting code:
-
-1. **Concurrency Safety**:
-   - Always wrap shared map reads and mutations in `sync.RWMutex` locks or call thread-safe getters (e.g., `GetMetadataMaps()`).
-   - Never mutate shared global state without mutex protection.
-
-2. **Network & SSRF Guards**:
-   - Never use standard `http.Get` directly for arbitrary user URLs. Always route network fetches through `crawler-service/httpclient`, which enforces private IP checks (`isPrivateIP`) and pinned DNS dialing (`DialContext`).
-
-3. **Resource & Memory Safety**:
-   - Wrap untrusted HTTP body stream reads in `io.LimitReader` (default 10MB limit) to prevent out-of-memory (OOM) panics from zip bombs or large files.
-
-4. **Database Security**:
-   - Use 100% prepared parameterized SQL queries (`$1, $2, $3`). Never use string concatenation (`fmt.Sprintf`) inside SQL statements.
+1. **Race Safety**: All shared data structures (Inverted Index, Trie, Vector Index) must be protected with `sync.RWMutex` or atomic primitives. All PRs must pass `go test -race ./...`.
+2. **Memory Bounding**: Always wrap external HTTP responses in `io.LimitReader(resp.Body, 10*1024*1024)` (10MB safety limit) to prevent memory exhaustion on untrusted web pages.
+3. **HTTP Keep-Alive Socket Draining**: Drain unread HTTP response bodies with `io.Copy(io.Discard, io.LimitReader(resp.Body, 512*1024))` before closing.
+4. **Error Handling**: Do not panic in library or request handler paths. Return explicit Go errors or appropriate HTTP status codes.
 
 ---
 
-## 🧪 Testing & Verification
+## Testing & Verification
 
-Before opening a Pull Request, you **must** run the test suite and static analysis tools.
+Run the full monorepo race detector suite before opening a pull request:
 
-### 1. Run Unit Tests
 ```bash
-go test -v ./...
-```
-
-### 2. Run Data Race Detector
-Ensure 0 data races exist across all concurrent packages:
-```bash
+# Run unit & race condition tests across all packages
 go test -race -v ./...
-```
 
-### 3. Run Static Analysis (`go vet`)
-```bash
+# Run static analysis
 go vet ./...
 ```
 
-All three commands must complete cleanly with **0 errors and 0 data races**.
-
 ---
 
-## 📤 Submitting a Pull Request
+## Submitting a Pull Request
 
-1. **Fork the Repository** and create a feature branch:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. **Commit Your Changes** with clear, descriptive commit messages:
-   ```bash
-   git commit -m "Add feature: support custom user-agent headers in agent-service"
-   ```
-
-3. **Push to Your Fork**:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-4. **Open a Pull Request** against the `main` branch of `https://github.com/anishraj836/WebLimbAI`.
-
-### PR Checklist
-- [ ] Code builds cleanly (`go build ./...`).
-- [ ] All unit tests pass (`go test -v ./...`).
-- [ ] Race detector reports 0 data races (`go test -race ./...`).
-- [ ] `go vet ./...` reports 0 warnings.
-- [ ] Clear description of the changes and motivation included in PR.
-
----
-
-Thank you for helping build **WebLimbAI**! 🦾🚀
+1. Fork the repository and create a feature branch (`git checkout -b feat/my-improvement`).
+2. Make your code changes adhering to our coding standards.
+3. Add corresponding unit tests in `*_test.go`.
+4. Run `go test -race ./...` and ensure all 23 packages pass cleanly.
+5. Commit your changes with conventional commit messages (`feat: ...`, `fix: ...`, `docs: ...`).
+6. Push to your fork and submit a Pull Request to `main`.
