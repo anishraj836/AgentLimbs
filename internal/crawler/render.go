@@ -91,7 +91,13 @@ func (e *FallbackRenderEngine) RenderSPA(ctx context.Context, targetURL string) 
 	if engineType == "chrome" && (os.Getenv("CHROME_PATH") != "" || os.Getenv("ENABLE_HEADLESS_CHROME") == "true") {
 		var lastChromeErr error
 		chromeAttempted := false
-		for _, bin := range []string{os.Getenv("CHROME_PATH"), "google-chrome", "chromium", "chromium-browser", "headless-shell"} {
+		var candidateBins []string
+		if customPath := os.Getenv("CHROME_PATH"); customPath != "" {
+			candidateBins = []string{customPath}
+		} else {
+			candidateBins = []string{"google-chrome", "chromium", "chromium-browser", "headless-shell"}
+		}
+		for _, bin := range candidateBins {
 			if bin == "" {
 				continue
 			}

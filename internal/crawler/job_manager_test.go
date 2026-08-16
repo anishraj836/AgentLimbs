@@ -87,12 +87,19 @@ func TestJobManager_SyncAndAsyncCrawl(t *testing.T) {
 }
 
 func TestJobManager_CancelJob(t *testing.T) {
+	started := make(chan struct{}, 1)
+	hold := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond) // Slow response to allow inflight cancel
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-hold // Wait until CancelJob is called
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<html><body><h1>Slow Page</h1></body></html>`))
 	}))
 	defer server.Close()
+	defer close(hold)
 
 	client := NewTestClient(true)
 	jm := NewJobManager(client, "testdata")
@@ -110,7 +117,11 @@ func TestJobManager_CancelJob(t *testing.T) {
 		t.Fatalf("StartCrawl failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+	}
+
 	cancelled := jm.CancelJob(job.ID)
 	if !cancelled {
 		t.Fatalf("expected CancelJob to return true")
