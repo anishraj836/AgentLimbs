@@ -801,25 +801,18 @@ func parseInterleavedFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 			return nil, err
 		}
 		parsedArgs := fs.Args()
-		sawTerminator := false
-		for i, a := range args {
-			if a == "--" {
-				if i+1 <= len(args) {
-					positional = append(positional, args[i+1:]...)
-					sawTerminator = true
-					break
-				}
-			}
-		}
-		if sawTerminator {
-			break
-		}
-
-		if len(parsedArgs) > 0 {
+		if len(args) == len(parsedArgs) {
+			// args[0] was a non-flag argument; consume it as positional
 			positional = append(positional, parsedArgs[0])
 			args = parsedArgs[1:]
 		} else {
-			args = nil
+			// fs.Parse consumed flags. Check if it stopped at a "--" terminator.
+			numConsumed := len(args) - len(parsedArgs)
+			if numConsumed > 0 && args[numConsumed-1] == "--" {
+				positional = append(positional, parsedArgs...)
+				break
+			}
+			args = parsedArgs
 		}
 	}
 	return positional, nil

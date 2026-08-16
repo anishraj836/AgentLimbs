@@ -234,6 +234,21 @@ func TestParseInterleavedFlags(t *testing.T) {
 	if len(pos2) != 2 || pos2[0] != "-not-a-flag" || pos2[1] != "https://example.com" {
 		t.Errorf("expected positional args ['-not-a-flag', 'https://example.com'], got %v", pos2)
 	}
+
+	// Test with positional arg preceding flag terminator "--"
+	fs3 := flag.NewFlagSet("test3", flag.ContinueOnError)
+	vFlag3 := fs3.Bool("v", false, "v flag")
+	args3 := []string{"https://go.dev/doc", "-v", "--", "-not-a-flag", "extra"}
+	pos3, err3 := parseInterleavedFlags(fs3, args3)
+	if err3 != nil {
+		t.Fatalf("parseInterleavedFlags with preceding positional failed: %v", err3)
+	}
+	if !*vFlag3 {
+		t.Errorf("expected vFlag3 to be true")
+	}
+	if len(pos3) != 3 || pos3[0] != "https://go.dev/doc" || pos3[1] != "-not-a-flag" || pos3[2] != "extra" {
+		t.Errorf("expected positional args ['https://go.dev/doc', '-not-a-flag', 'extra'], got %v", pos3)
+	}
 }
 
 func TestCLISeedAndSearch(t *testing.T) {
