@@ -820,10 +820,10 @@ func parseInterleavedFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 }
 
 func printHelp() {
-	helpText := fmt.Sprintf(`WebLimbAI CLI (%s) — High-Performance RAG Web Crawler & Hybrid Search Engine
+	helpText := fmt.Sprintf(`WebLimbAI LightLimbs (%s) — High-Performance RAG Web Crawler & Hybrid Search Engine
 
 Usage:
-  weblimb <subcommand> [flags]
+  lightlimbs <subcommand> [flags]
 
 Available Subcommands:
   serve                               Run HTTP REST API server or stdio MCP server (Default)
@@ -833,20 +833,20 @@ Available Subcommands:
   search "<query>"                    Hybrid BM25 + Vector + RRF search from local index
   init-mcp                            1-Click AI IDE auto-configurator (Claude Desktop & Cursor)
   seed                                Seed 1,000+ SDE technical documents into local index
-  version                             Display current WebLimbAI version
+  version                             Display current WebLimbAI version & runtime diagnostics
 
 Examples:
-  weblimb                                               # Starts HTTP API daemon on :8080
-  weblimb serve --port 9090                             # Starts HTTP server on port 9090
-  weblimb serve --mcp                                   # Starts stdio Model Context Protocol server
-  weblimb scrape https://go.dev -j                      # Scrapes URL and prints structured JSON
-  weblimb crawl https://docs.docker.com -a -d 2         # Adaptive entropy-guided documentation crawl
-  weblimb extract https://example.com --schema s.json   # Structured JSON extraction with schema
-  weblimb search "GMP Scheduler"                        # Searches local indexed documents
-  weblimb init-mcp                                      # Configures Claude Desktop & Cursor MCP JSON
-  weblimb seed                                          # Seeds 1,000+ technical documents
+  lightlimbs                                            # Starts HTTP API daemon on :8080
+  lightlimbs serve --port 9090                          # Starts HTTP server on port 9090
+  lightlimbs serve --mcp                                # Starts stdio Model Context Protocol server
+  lightlimbs scrape https://go.dev -j                   # Scrapes URL and prints structured JSON
+  lightlimbs crawl https://docs.docker.com -a -d 2      # Adaptive entropy-guided documentation crawl
+  lightlimbs extract https://example.com --schema s.json# Structured JSON extraction with schema
+  lightlimbs search "GMP Scheduler"                     # Searches local indexed documents
+  lightlimbs init-mcp                                   # Configures Claude Desktop & Cursor MCP JSON
+  lightlimbs seed                                       # Seeds 1,000+ technical documents
 
-Run 'weblimb <subcommand> --help' for details on each subcommand.
+Run 'lightlimbs <subcommand> --help' for details on each subcommand.
 `, version)
 	fmt.Fprint(os.Stderr, helpText)
 }
