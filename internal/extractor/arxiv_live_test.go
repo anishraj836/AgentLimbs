@@ -3,12 +3,25 @@ package extractor
 import (
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
+func shouldSkipLiveTest(t *testing.T) bool {
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+		t.Skip("Skipping live external network test in CI environment")
+		return true
+	}
+	return false
+}
+
 func TestLiveArxivPaperExtraction(t *testing.T) {
+	if shouldSkipLiveTest(t) {
+		return
+	}
+
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get("https://arxiv.org/pdf/1706.03762")
 	if err != nil {
@@ -16,6 +29,12 @@ func TestLiveArxivPaperExtraction(t *testing.T) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("arxiv.org returned HTTP %d (rate-limited/blocked), skipping live test", resp.StatusCode)
+		return
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read body: %v", err)
@@ -77,6 +96,10 @@ func TestLiveArxivPaperExtraction(t *testing.T) {
 }
 
 func TestLiveWord2VecPaperExtraction(t *testing.T) {
+	if shouldSkipLiveTest(t) {
+		return
+	}
+
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get("https://arxiv.org/pdf/1301.3781")
 	if err != nil {
@@ -84,6 +107,12 @@ func TestLiveWord2VecPaperExtraction(t *testing.T) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("arxiv.org returned HTTP %d (rate-limited/blocked), skipping live test", resp.StatusCode)
+		return
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read body: %v", err)
@@ -112,6 +141,10 @@ func TestLiveWord2VecPaperExtraction(t *testing.T) {
 }
 
 func TestLiveResNetPaperExtraction(t *testing.T) {
+	if shouldSkipLiveTest(t) {
+		return
+	}
+
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get("https://arxiv.org/pdf/1512.03385")
 	if err != nil {
@@ -119,6 +152,12 @@ func TestLiveResNetPaperExtraction(t *testing.T) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("arxiv.org returned HTTP %d (rate-limited/blocked), skipping live test", resp.StatusCode)
+		return
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read body: %v", err)
@@ -139,6 +178,10 @@ func TestLiveResNetPaperExtraction(t *testing.T) {
 }
 
 func TestLiveBERTPaperExtraction(t *testing.T) {
+	if shouldSkipLiveTest(t) {
+		return
+	}
+
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get("https://arxiv.org/pdf/1810.04805")
 	if err != nil {
@@ -146,6 +189,12 @@ func TestLiveBERTPaperExtraction(t *testing.T) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("arxiv.org returned HTTP %d (rate-limited/blocked), skipping live test", resp.StatusCode)
+		return
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read body: %v", err)

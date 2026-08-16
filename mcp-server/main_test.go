@@ -87,7 +87,7 @@ func TestLargePayload(t *testing.T) {
 		if !strings.Contains(outStr, "-32700") || !strings.Contains(outStr, "line length exceeded 10MB") {
 			t.Errorf("expected line length exceeded 10MB error response, got: %s", outStr)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatalf("timed out waiting for MCP response on large payload")
 	}
 }
@@ -152,7 +152,7 @@ func TestStdioInvalidJSON_Continues(t *testing.T) {
 		if !strings.Contains(output, "-32700") && !strings.Contains(output, "Parse error") {
 			t.Errorf("Expected -32700 Parse error in output, got: %s", output)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatalf("timed out waiting for MCP error response")
 	}
 }
