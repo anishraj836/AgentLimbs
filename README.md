@@ -4,7 +4,7 @@
 
 Crawl documentation. Strip HTML boilerplate. Search semantically and lexically. Expose the knowledge directly to **Cursor**, **Claude Desktop**, and **autonomous agents** via native Model Context Protocol (MCP).
 
-**Starts as a zero-dependency single binary (15 MB RAM); scales to a distributed cluster when you need it.**
+**Starts as a zero-dependency single binary (~20 MB RAM); scales to a distributed cluster when you need it.**
 
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -137,7 +137,7 @@ WebLimbAI supports two deployment modes depending on scale and infrastructure re
 │ • In-memory hybrid search (BM25+V)    │ • Partitioned Raft consensus sharding   │
 │ • Local JSON snapshot file fallback   │ • Virtual node consistent hashing ring  │
 │ • Stdio MCP server for AI IDEs        │ • Kafka stream-processing ingestion     │
-│ • Memory footprint: ~25 MB            │ • Distributed scatter-gather coordinator│
+│ • Memory footprint: ~20 MB            │ • Distributed scatter-gather coordinator│
 │ • Ideal for: Local LLMs, AI IDEs, dev │ • Ideal for: Large-scale cloud clusters │
 └───────────────────────────────────────┴─────────────────────────────────────────┘
 ```
@@ -601,6 +601,16 @@ go run cmd/seed_sde_corpus/main.go
 ---
 
 ## High-Scale Performance Benchmarks
+
+To reproduce these benchmarks locally:
+
+```bash
+# 500,000 document in-memory ingestion and search benchmark:
+go run scripts/benchmarks/scale_500k/main.go
+
+# 1,000,000 document multi-core stress benchmark with Block-Max WAND & Int8 vectors:
+go run scripts/benchmarks/scale_1m/main.go
+```
 
 ### 500,000-Document Benchmark
 
