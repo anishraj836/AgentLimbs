@@ -217,6 +217,28 @@ Measured using OpenAI's `cl100k_base` BPE tokenizer across standard documentatio
 | **HttpBin Narrative** (`httpbin.org/html`) | 780 tokens | 194 tokens | **75.1%** | **0.8 ms** |
 | **Hacker News Frontpage** (`news.ycombinator.com`) | 12,450 tokens | 2,110 tokens | **83.1%** | **2.3 ms** |
 
+#### Extraction Sample: Go Tutorial (`clean_rag` Mode)
+
+- **Raw Page**: 3,142 tokens (includes global navigation header, cookie banners, search bar, sidebars, and analytics).
+- **Extracted Markdown**: 487 tokens (**84.5% reduction** — retains clean headings, lists, code blocks, and links without boilerplate):
+
+```markdown
+# Tutorial: Getting started with Go
+
+In this tutorial, you'll get a brief introduction to Go programming. In the process, you will:
+- Install Go.
+- Write some simple "Hello, world" code.
+- Use the `go` command to run your code.
+
+## Prerequisites
+- Some programming experience.
+- A tool to edit your code. Any text editor you have will do.
+- A command terminal.
+
+## Install Go
+To install Go, follow the installation instructions at [go.dev/doc/install](https://go.dev/doc/install).
+```
+
 ---
 
 ## Architectural Scope & Limitations
