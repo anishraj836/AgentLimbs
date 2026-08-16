@@ -241,13 +241,13 @@ func (f *PriorityFrontier) Enqueue(rawURL string, anchorText string, depth int) 
 }
 
 func (f *PriorityFrontier) TryDequeue() (*PriorityItem, bool) {
-	if f == nil {
+	if f == nil || f.closed.Load() {
 		return nil, false
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if len(f.heap) == 0 {
+	if f.closed.Load() || len(f.heap) == 0 {
 		return nil, false
 	}
 

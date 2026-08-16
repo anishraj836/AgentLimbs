@@ -219,6 +219,21 @@ func TestParseInterleavedFlags(t *testing.T) {
 	if *modeFlag != "raw" {
 		t.Errorf("expected mode flag 'raw', got %s", *modeFlag)
 	}
+
+	// Test with explicit flag terminator "--"
+	fs2 := flag.NewFlagSet("test2", flag.ContinueOnError)
+	vFlag := fs2.Bool("v", false, "v flag")
+	args2 := []string{"-v", "--", "-not-a-flag", "https://example.com"}
+	pos2, err2 := parseInterleavedFlags(fs2, args2)
+	if err2 != nil {
+		t.Fatalf("parseInterleavedFlags with terminator failed: %v", err2)
+	}
+	if !*vFlag {
+		t.Errorf("expected vFlag to be true")
+	}
+	if len(pos2) != 2 || pos2[0] != "-not-a-flag" || pos2[1] != "https://example.com" {
+		t.Errorf("expected positional args ['-not-a-flag', 'https://example.com'], got %v", pos2)
+	}
 }
 
 func TestCLISeedAndSearch(t *testing.T) {

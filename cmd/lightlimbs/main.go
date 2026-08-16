@@ -793,13 +793,33 @@ func loadSnapshotsForCLI(dataDir string) {
 func parseInterleavedFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for len(args) > 0 {
+		if args[0] == "--" {
+			positional = append(positional, args[1:]...)
+			break
+		}
 		if err := fs.Parse(args); err != nil {
 			return nil, err
 		}
-		args = fs.Args()
-		if len(args) > 0 {
-			positional = append(positional, args[0])
-			args = args[1:]
+		parsedArgs := fs.Args()
+		sawTerminator := false
+		for i, a := range args {
+			if a == "--" {
+				if i+1 <= len(args) {
+					positional = append(positional, args[i+1:]...)
+					sawTerminator = true
+					break
+				}
+			}
+		}
+		if sawTerminator {
+			break
+		}
+
+		if len(parsedArgs) > 0 {
+			positional = append(positional, parsedArgs[0])
+			args = parsedArgs[1:]
+		} else {
+			args = nil
 		}
 	}
 	return positional, nil

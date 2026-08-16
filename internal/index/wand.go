@@ -144,6 +144,22 @@ func (pl *CompressedPostingList) SealTail() {
 		return entries[i].docID < entries[j].docID
 	})
 
+	// Deduplicate adjacent identical docIDs if a document was re-indexed before tail sealing
+	deduped := entries[:0]
+	for _, e := range entries {
+		if len(deduped) > 0 && deduped[len(deduped)-1].docID == e.docID {
+			deduped[len(deduped)-1].tf += e.tf
+			deduped[len(deduped)-1].docLen = e.docLen
+		} else {
+			deduped = append(deduped, e)
+		}
+	}
+	entries = deduped
+	n = len(entries)
+	if n == 0 {
+		return
+	}
+
 	// Chunk into blocks of at most 64
 	for chunkStart := 0; chunkStart < n; chunkStart += 64 {
 		chunkEnd := chunkStart + 64

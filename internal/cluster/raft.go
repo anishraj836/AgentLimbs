@@ -510,6 +510,10 @@ func (rn *RaftNode) applyCommittedEntriesLocked() {
 			go func(t applyTask) {
 				select {
 				case <-rn.stopCh:
+					if t.future != nil {
+						t.future <- ErrNotLeader
+						close(t.future)
+					}
 					return
 				case rn.applyTasks <- t:
 				}

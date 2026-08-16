@@ -165,7 +165,10 @@ func (a *MetasearchAdapter) executeMetasearch(ctx context.Context, query string,
 				if err != nil || fetchRes == nil || fetchRes.Response == nil {
 					return nil
 				}
-				defer fetchRes.Response.Body.Close()
+				defer func() {
+					_, _ = io.Copy(io.Discard, io.LimitReader(fetchRes.Response.Body, 512*1024))
+					_ = fetchRes.Response.Body.Close()
+				}()
 
 				limitedBody := io.LimitReader(fetchRes.Response.Body, 10*1024*1024)
 				bodyBytes, readErr := io.ReadAll(limitedBody)
