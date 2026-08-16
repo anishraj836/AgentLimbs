@@ -44,35 +44,47 @@ WebLimbAI resolves these challenges by combining an anti-bot HTTP client, HTML D
 
 ## Quick Start: LightLimbs CLI
 
-Install WebLimbAI using the installer script or compile directly from source:
+### 1. Installation
 
+**macOS & Linux (Bash):**
 ```bash
-# 1-Line Installer (macOS & Linux, automatically detects architecture)
 curl -sSfL https://raw.githubusercontent.com/anishraj836/WebLimbAI/main/scripts/install.sh | sh
-
-# Or build LightLimbs from source:
-go build -o lightlimbs ./cmd/lightlimbs
 ```
 
-### 1-Click MCP Setup (Cursor & Claude Desktop)
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/anishraj836/WebLimbAI/main/scripts/install.ps1 | iex
+```
 
-Configure the Model Context Protocol in Cursor or Claude Desktop:
+**Or build from source:**
+```bash
+# macOS / Linux
+go build -o lightlimbs ./cmd/lightlimbs
+
+# Windows (Command Prompt / PowerShell)
+go build -o lightlimbs.exe ./cmd/lightlimbs
+```
+
+### 2. 1-Click MCP Setup (Cursor & Claude Desktop)
+
+Automatically configure your AI editor's Model Context Protocol without manually editing JSON files:
 
 ```bash
 # Configures Claude Desktop and Cursor IDE:
 lightlimbs init-mcp
 
-# Or preview the configuration JSON:
+# Or preview the configuration JSON (stdout):
 lightlimbs init-mcp --stdout
 ```
 
-### CLI Commands
+### 3. CLI Commands
 
+**macOS / Linux:**
 ```bash
 # Scrape a web page into clean, token-reduced Markdown:
 lightlimbs scrape https://go.dev/doc/tutorial/getting-started
 
-# Scrape and output structured JSON:
+# Scrape and output structured JSON (pipeable to jq):
 lightlimbs scrape https://go.dev -j | jq .
 
 # Recursive adaptive entropy crawl:
@@ -86,6 +98,24 @@ lightlimbs seed
 
 # Run the HTTP API and MCP daemon:
 lightlimbs serve --port 8080
+```
+
+**Windows (PowerShell):**
+```powershell
+# Scrape a web page:
+.\lightlimbs.exe scrape https://go.dev/doc/tutorial/getting-started
+
+# Scrape and output structured JSON:
+.\lightlimbs.exe scrape https://go.dev -j
+
+# Hybrid search:
+.\lightlimbs.exe search "goroutine channel concurrency" --top 5
+
+# Seed local index:
+.\lightlimbs.exe seed
+
+# Start HTTP daemon on port 8080:
+.\lightlimbs.exe serve --port 8080
 ```
 
 ---
