@@ -521,13 +521,13 @@ func (h *AgentHandler) Tools(w http.ResponseWriter, r *http.Request) {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        "agent_limbs_scrape",
-				"description": "Fetch and convert any website URL into clean, token-efficient Github-Flavored Markdown for LLMs.",
+				"description": "Fast, low-latency DOM parser that extracts clean, token-reduced Markdown from static/SSR web pages (documentation, API references, technical blogs, wikis, articles). Use this to read documentation and articles in <5ms without browser overhead. (Note: does not execute client-side JavaScript for heavy SPAs).",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"url": map[string]interface{}{
 							"type":        "string",
-							"description": "The target website URL to scrape (e.g. https://golang.org)",
+							"description": "The target website URL to scrape (e.g. https://go.dev/doc/tutorial/getting-started)",
 						},
 					},
 					"required": []string{"url"},
@@ -538,7 +538,7 @@ func (h *AgentHandler) Tools(w http.ResponseWriter, r *http.Request) {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        "agent_limbs_hybrid_search",
-				"description": "Search the indexed web corpus using Hybrid RRF (BM25 Keyword + AI Vector Semantic Similarity).",
+				"description": "Sub-millisecond hybrid search (BM25 keyword matching + Int8 dense vector semantic similarity with Reciprocal Rank Fusion) over all crawled and indexed documentation.",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{

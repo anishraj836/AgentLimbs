@@ -151,25 +151,25 @@ func HandleRPCMessage(raw []byte, client *crawler.Client) (respBytes []byte, err
 		tools := []Tool{
 			{
 				Name:        "agent_limbs_scrape",
-				Description: "Scrape and extract clean Markdown content from a web URL into AgentLimbs search index",
+				Description: "Fast, low-latency DOM parser that extracts clean, token-reduced Markdown from static/SSR web pages (documentation, API references, technical blogs, wikis, articles). Use this to read documentation and articles in <5ms without browser overhead. (Note: optimized for text/content pages; does not execute client-side JavaScript for heavy SPAs).",
 				InputSchema: ToolSchema{
 					Type: "object",
 					Properties: map[string]Property{
-						"url":         {Type: "string", Description: "Target URL to scrape"},
-						"mode":        {Type: "string", Description: "Extraction mode", Enum: []string{"clean_rag", "preserve_links", "raw"}},
-						"ttl_seconds": {Type: "integer", Description: "Time to live for the scraped document in seconds"},
+						"url":         {Type: "string", Description: "Target website URL to scrape (e.g. https://go.dev/doc/tutorial/getting-started)"},
+						"mode":        {Type: "string", Description: "Extraction mode: 'clean_rag' (strips navbars/scripts/ads, default), 'preserve_links', or 'raw'", Enum: []string{"clean_rag", "preserve_links", "raw"}},
+						"ttl_seconds": {Type: "integer", Description: "Optional time-to-live for caching the scraped document in seconds"},
 					},
 					Required: []string{"url"},
 				},
 			},
 			{
 				Name:        "agent_limbs_hybrid_search",
-				Description: "Perform hybrid BM25 and vector RAG search over indexed documents",
+				Description: "Sub-millisecond hybrid search (BM25 keyword matching + Int8 dense vector semantic similarity with Reciprocal Rank Fusion) over all crawled and indexed documentation.",
 				InputSchema: ToolSchema{
 					Type: "object",
 					Properties: map[string]Property{
-						"query": {Type: "string", Description: "Search query"},
-						"limit": {Type: "integer", Description: "Maximum results count"},
+						"query": {Type: "string", Description: "The technical search query, topic, or question"},
+						"limit": {Type: "integer", Description: "Maximum number of top-ranked results to return (default: 5)"},
 					},
 					Required: []string{"query"},
 				},
